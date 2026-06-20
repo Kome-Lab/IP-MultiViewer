@@ -39,7 +39,7 @@ Windows Desktop App を主役にした汎用 IP stream MultiViewer です。Auto
 
 ## 再生バックエンド
 
-現時点では WPF / LibVLCSharp を継続します。FFmpeg、GStreamer、Media Foundation などの比較は [docs/playback-backend-comparison.md](docs/playback-backend-comparison.md) にまとめています。
+現時点では WPF / LibVLCSharp を継続します。FFmpeg、GStreamer、Media Foundation などの比較は `ip-multiviewer-docs` repository にまとめています。
 
 ## 検証
 

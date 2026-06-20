@@ -1,0 +1,103 @@
+﻿name: Windows Desktop Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example v1.2.3"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    name: Build Windows x64 executable
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Resolve release metadata
+        id: meta
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $version = $env:GITHUB_REF_NAME
+          } else {
+            $version = "${{ inputs.version }}"
+          }
+          if ($version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$') {
+            throw "Version must look like v1.2.3; got $version"
+          }
+          $packageName = "ip-multiviewer_${version}_windows_x64"
+          $exeName = "IPMultiViewer-${version}-Desktop.exe"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "package_name=$packageName" >> $env:GITHUB_OUTPUT
+          "exe_name=$exeName" >> $env:GITHUB_OUTPUT
+          "assembly_version=$($version.TrimStart('v'))" >> $env:GITHUB_OUTPUT
+
+      - name: Restore desktop project
+        shell: pwsh
+        run: dotnet restore apps/desktop-windows/IPMultiViewer.Desktop.csproj
+
+      - name: Publish single-file executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet publish apps/desktop-windows/IPMultiViewer.Desktop.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -o publish/windows-x64 `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:IncludeAllContentForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:DebugType=none `
+            -p:DebugSymbols=false `
+            -p:Version=${{ steps.meta.outputs.assembly_version }}
+
+          $exe = "publish/windows-x64/IPMultiViewer.Desktop.exe"
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "Publish did not produce expected executable: $exe"
+          }
+
+      - name: Package release artifacts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $packageName = "${{ steps.meta.outputs.package_name }}"
+          $staging = Join-Path "staging" $packageName
+          $artifacts = "artifacts"
+          New-Item -ItemType Directory -Force -Path $staging, $artifacts | Out-Null
+          Copy-Item -LiteralPath "publish/windows-x64/IPMultiViewer.Desktop.exe" -Destination (Join-Path $staging "${{ steps.meta.outputs.exe_name }}") -Force
+
+          $zip = Join-Path $artifacts "$packageName.zip"
+          if (Test-Path -LiteralPath $zip) {
+            Remove-Item -LiteralPath $zip -Force
+          }
+          Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $zip
+
+          $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $zip
+          "$($hash.Hash.ToLowerInvariant())  $packageName.zip" | Set-Content -NoNewline -Encoding ascii -Path "$zip.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.meta.outputs.package_name }}
+          path: artifacts/*
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.meta.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          files: artifacts/*

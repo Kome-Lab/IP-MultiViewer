@@ -1,0 +1,15 @@
+services:
+  server:
+    build: .
+    env_file: .env.example
+    environment:
+      MULTIVIEWER_BIND_ADDR: 0.0.0.0:8080
+      MULTIVIEWER_DATA_DIR: /var/lib/ip-multiviewer
+      DATABASE_URL: sqlite:///var/lib/ip-multiviewer/ip-multiviewer.db
+    ports:
+      - "8080:8080"
+    volumes:
+      - server-data:/var/lib/ip-multiviewer
+
+volumes:
+  server-data:

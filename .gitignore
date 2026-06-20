@@ -1,0 +1,10 @@
+bin/
+obj/
+coverage.out
+.env
+*.log
+apps/desktop-windows/bin/
+apps/desktop-windows/obj/
+apps/desktop-windows/publish/
+apps/desktop-windows/signing/*.pfx
+apps/desktop-windows/signing/*.cer
