@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -64,7 +66,7 @@ public sealed class AlertProfileConfig
     public double BlackThreshold { get; set; } = 0.04;
     public double BlackPixelThreshold { get; set; } = 0.04;
     public double BlackPixelRatioThreshold { get; set; } = 0.85;
-    public double MinBlackDurationSec { get; set; } = 3;
+    public double MinBlackDurationSec { get; set; } = 0;
     public double FreezeDifferenceThreshold { get; set; } = 0.015;
     public double MinFreezeDurationSec { get; set; } = 5;
     public int MinFreezeFrames { get; set; } = 30;
@@ -222,12 +224,21 @@ public static class LocalConfigStore
             config.AlertProfiles.Add(new AlertProfileConfig());
         }
 
+        var usedProfileIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var profile in config.AlertProfiles)
         {
             var defaults = new AlertProfileConfig();
             if (string.IsNullOrWhiteSpace(profile.Id))
             {
-                profile.Id = defaults.Id;
+                profile.Id = usedProfileIds.Count == 0 && !usedProfileIds.Contains(defaults.Id)
+                    ? defaults.Id
+                    : CreateAlertProfileId(usedProfileIds);
+            }
+
+            if (!usedProfileIds.Add(profile.Id))
+            {
+                profile.Id = CreateAlertProfileId(usedProfileIds);
+                usedProfileIds.Add(profile.Id);
             }
 
             if (string.IsNullOrWhiteSpace(profile.Name))
@@ -238,7 +249,7 @@ public static class LocalConfigStore
             profile.BlackThreshold = profile.BlackThreshold > 0 ? profile.BlackThreshold : defaults.BlackThreshold;
             profile.BlackPixelThreshold = profile.BlackPixelThreshold > 0 ? profile.BlackPixelThreshold : defaults.BlackPixelThreshold;
             profile.BlackPixelRatioThreshold = profile.BlackPixelRatioThreshold > 0 ? profile.BlackPixelRatioThreshold : defaults.BlackPixelRatioThreshold;
-            profile.MinBlackDurationSec = profile.MinBlackDurationSec > 0 ? profile.MinBlackDurationSec : defaults.MinBlackDurationSec;
+            profile.MinBlackDurationSec = 0;
             profile.FreezeDifferenceThreshold = profile.FreezeDifferenceThreshold > 0 ? profile.FreezeDifferenceThreshold : defaults.FreezeDifferenceThreshold;
             profile.MinFreezeDurationSec = profile.MinFreezeDurationSec > 0 ? profile.MinFreezeDurationSec : defaults.MinFreezeDurationSec;
             profile.MinFreezeFrames = profile.MinFreezeFrames > 0 ? profile.MinFreezeFrames : defaults.MinFreezeFrames;
@@ -249,6 +260,12 @@ public static class LocalConfigStore
             profile.InputTimeoutSec = profile.InputTimeoutSec > 0 ? profile.InputTimeoutSec : defaults.InputTimeoutSec;
             profile.LowFpsThreshold = profile.LowFpsThreshold > 0 ? profile.LowFpsThreshold : defaults.LowFpsThreshold;
             profile.MinLowFpsDurationSec = profile.MinLowFpsDurationSec > 0 ? profile.MinLowFpsDurationSec : defaults.MinLowFpsDurationSec;
+        }
+
+        var fallbackProfileId = config.AlertProfiles.FirstOrDefault()?.Id ?? "default";
+        foreach (var stream in config.Streams.Where(stream => config.AlertProfiles.All(profile => !string.Equals(profile.Id, stream.AlertProfileId, StringComparison.OrdinalIgnoreCase))))
+        {
+            stream.AlertProfileId = fallbackProfileId;
         }
 
         foreach (var alert in config.AlertHistory)
@@ -263,5 +280,16 @@ public static class LocalConfigStore
                 alert.UpdatedAt = alert.StartedAt;
             }
         }
+    }
+
+    private static string CreateAlertProfileId(ISet<string> usedIds)
+    {
+        string id;
+        do
+        {
+            id = $"profile-{Guid.NewGuid():N}"[..20];
+        }
+        while (usedIds.Contains(id));
+        return id;
     }
 }

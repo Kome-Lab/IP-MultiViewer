@@ -20,7 +20,7 @@ Windows Desktop App を主役にした汎用 IP stream MultiViewer です。Auto
 - Playback を開始していない tile は `OK` ではなく `standby / playback stopped` と表示します。
 - 手動 Stop、未再生、standalone idle では `video.no_signal` を出しません。
 - `video.decode_error` と `video.no_signal` は別 alert です。decode error だけで no-signal timer は進めません。
-- `video.black` は ffmpeg 解析 fallback または hidden `VideoLumaMonitor` から平均輝度、暗色 pixel ratio、持続秒数で判定します。
+- `video.black` は ffmpeg 共有解析から平均輝度と暗色 pixel ratio を見て、黒味フレームの初回検知で alert を出します。
 - `video.freeze` は ffmpeg 解析 fallback または hidden `VideoLumaMonitor` からフレーム差分、安定フレーム数、持続秒数で判定します。
 - `video.no_signal`、`video.black`、`video.freeze`、`video.low_fps`、`audio.silence`、`audio.clipping` は同じ stream 上で同時 active alert として扱えます。
 - Alert 発生中の MV タイルは severity に応じて赤または黄で点滅します。

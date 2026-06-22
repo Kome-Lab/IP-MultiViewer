@@ -62,7 +62,7 @@ type DetectionConfig struct {
 func DefaultConfig() DetectionConfig {
 	return DetectionConfig{
 		BlackThreshold:         0.05,
-		MinBlackDuration:       3 * time.Second,
+		MinBlackDuration:       0,
 		FreezeThreshold:        0.01,
 		MinFreezeDuration:      5 * time.Second,
 		InputTimeout:           5 * time.Second,
@@ -102,7 +102,10 @@ func EvaluateVideo(now time.Time, stats FrameStats, cfg DetectionConfig, state *
 	}
 	var alerts []DetectionAlert
 	if IsBlack(stats, cfg.BlackThreshold) {
-		alerts = appendDurationAlert(alerts, state, "video.black", now, &state.BlackSince, cfg.MinBlackDuration)
+		alerts = appendImmediateAlert(alerts, state, "video.black", now)
+		if state.BlackSince.IsZero() {
+			state.BlackSince = now
+		}
 	} else {
 		state.BlackSince = time.Time{}
 		state.OpenAlerts["video.black"] = false
@@ -208,6 +211,10 @@ func EvaluateNoSignal(now time.Time, cfg DetectionConfig, state *DurationState) 
 func appendDurationAlert(alerts []DetectionAlert, state *DurationState, typ string, now time.Time, since *time.Time, min time.Duration) []DetectionAlert {
 	if since.IsZero() {
 		*since = now
+		if min <= 0 && !state.OpenAlerts[typ] {
+			state.OpenAlerts[typ] = true
+			alerts = append(alerts, DetectionAlert{Type: typ, Open: true, OccurredAt: now})
+		}
 		return alerts
 	}
 	duration := now.Sub(*since)

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Buffers;
 using System.Collections.ObjectModel;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -28,12 +29,28 @@ namespace IPMultiViewer.Desktop;
 
 public partial class MainWindow : Window
 {
+    private readonly record struct PlaybackVideoFreshness(double AgeMs, double RenderDelayMs);
+
+    private static readonly object ColorResourceSync = new();
+    private static readonly Dictionary<string, Brush> BrushCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, Color> ColorCache = new(StringComparer.OrdinalIgnoreCase);
+
     private static readonly HashSet<string> ActiveAlertStatuses = new(StringComparer.OrdinalIgnoreCase)
     {
         "open",
         "acknowledged",
         "snoozed"
     };
+    private static readonly string[] PendingIssueTypes =
+    [
+        "video.no_signal",
+        "video.black",
+        "video.freeze",
+        "video.low_fps",
+        "audio.channel_missing",
+        "audio.silence",
+        "audio.clipping"
+    ];
 
     internal static bool IsActiveAlertStatus(string status)
     {
@@ -51,26 +68,47 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, long> _lastPlaybackProgressMarker = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _lastPlaybackProgressAt = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _lastVideoAnalysisLogAt = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _playbackRestartAfter = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _lastDisplayedPictures = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _lastVideoPresentedAt = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<Border>> _tileStatusFrames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Border> _tileBorders = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TextBlock> _tileStatusTextBlocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, StackPanel> _tileAlertStacks = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Grid> _tileSurfaceHosts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _tileSurfaceRenderKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, VideoView> _tileVideoViews = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Image> _tileFfmpegImages = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TextBlock> _tileSurfacePlaceholders = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Grid> _tileAudioMeterHosts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, AudioMeterView[]> _tileAudioMeterViews = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Dictionary<int, AudioMeterView>> _tileAudioMeterViewLookup = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _lastAudioMeterTargetRefreshAt = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _tileChromeRenderKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> _tileStatusTextRenderKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _tileRenderedAlertKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, byte[]> _alertSoundWaves = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _immediateVideoAlertEvaluationSync = new();
+    private readonly HashSet<string> _pendingImmediateVideoAlertEvaluations = new(StringComparer.OrdinalIgnoreCase);
     private readonly HttpClient _httpClient = new();
+    private SoundPlayer? _activeAlertSoundPlayer;
+    private MemoryStream? _activeAlertSoundStream;
+    private string? _activeAlertSoundKey;
     private bool _isLoading;
     private bool _blinkPhase;
     private LibVLC? _libVlc;
     private readonly DispatcherTimer _playbackTimer;
+    private readonly DispatcherTimer _audioMeterTimer;
     private SettingsWindow _settingsWindow = null!;
     private AlertHistoryWindow? _alertHistoryWindow;
     private DateTimeOffset _lastServerSyncAt = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastSlowPlaybackRefreshAt = DateTimeOffset.MinValue;
     private bool _serverSyncInFlight;
     private bool _playbackStartInFlight;
+    private bool _layoutSelectionInProgress;
     private const double TileFrameThickness = 3;
+    private const int LivePlaybackCacheMs = 100;
+    private static readonly TimeSpan PlaybackVideoFreshnessWarning = TimeSpan.FromSeconds(1);
     private static readonly JsonSerializerOptions ServerJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -109,10 +147,12 @@ public partial class MainWindow : Window
     private Button ApplyStreamButton => _settingsWindow.ApplyStreamButton;
     private Button DeleteStreamButton => _settingsWindow.DeleteStreamButton;
     private ComboBox AlertProfileCombo => _settingsWindow.AlertProfileCombo;
+    private TextBox AlertProfileNameText => _settingsWindow.AlertProfileNameText;
+    private Button DuplicateAlertProfileButton => _settingsWindow.DuplicateAlertProfileButton;
+    private Button DeleteAlertProfileButton => _settingsWindow.DeleteAlertProfileButton;
     private TextBox BlackThresholdText => _settingsWindow.BlackThresholdText;
     private TextBox BlackPixelThresholdText => _settingsWindow.BlackPixelThresholdText;
     private TextBox BlackPixelRatioText => _settingsWindow.BlackPixelRatioText;
-    private TextBox MinBlackDurationText => _settingsWindow.MinBlackDurationText;
     private TextBox FreezeDifferenceText => _settingsWindow.FreezeDifferenceText;
     private TextBox MinFreezeDurationText => _settingsWindow.MinFreezeDurationText;
     private TextBox MinFreezeFramesText => _settingsWindow.MinFreezeFramesText;
@@ -125,12 +165,17 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
-        _playbackTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _playbackTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _playbackTimer.Tick += (_, _) => RefreshPlaybackMetadata();
+        _audioMeterTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+        _audioMeterTimer.Tick += (_, _) => RefreshAudioMeterTargets();
         InitializeComponent();
         _settingsWindow = new SettingsWindow(this);
         LoadConfig();
+        CompositionTarget.Rendering += AudioMeterCompositionTarget_Rendering;
         _playbackTimer.Start();
+        _audioMeterTimer.Start();
+        QueueInitialPlaybackStart();
     }
 
     private void LoadConfig()
@@ -155,12 +200,12 @@ public partial class MainWindow : Window
         ServerUrlText.Text = _config.ServerUrl;
         ClientTokenBox.Password = _config.ClientToken;
         ServerSyncCheck.IsChecked = _config.ServerSyncEnabled;
-        ModeText.Text = string.IsNullOrWhiteSpace(_config.ServerUrl)
+        SetTextIfChanged(ModeText, string.IsNullOrWhiteSpace(_config.ServerUrl)
             ? "Standalone local mode"
-            : $"Server sync: {_config.ServerUrl}";
-        ServerSyncStatusText.Text = _config.ServerSyncEnabled ? "server sync: pending" : "server sync: disabled";
-        ServerClientSummaryText.Text = _config.ServerSyncEnabled ? "server clients: pending" : "server clients: unavailable";
-        ConfigPathText.Text = LocalConfigStore.DefaultConfigPath;
+            : $"Server sync: {_config.ServerUrl}");
+        SetTextIfChanged(ServerSyncStatusText, _config.ServerSyncEnabled ? "server sync: pending" : "server sync: disabled");
+        SetTextIfChanged(ServerClientSummaryText, _config.ServerSyncEnabled ? "server clients: pending" : "server clients: unavailable");
+        SetTextIfChanged(ConfigPathText, LocalConfigStore.DefaultConfigPath);
         RenderAlerts();
         RenderTiles();
         _isLoading = false;
@@ -175,21 +220,75 @@ public partial class MainWindow : Window
         }
 
         Core.Initialize();
-        _libVlc = new LibVLC("--no-video-title-show", "--network-caching=300");
+        _libVlc = new LibVLC(LowLatencyVlcInstanceOptions());
         return _libVlc;
+    }
+
+    internal static string[] LowLatencyVlcInstanceOptions()
+    {
+        return
+        [
+            "--no-video-title-show",
+            $"--network-caching={LivePlaybackCacheMs}",
+            $"--live-caching={LivePlaybackCacheMs}",
+            $"--file-caching={LivePlaybackCacheMs}",
+            "--drop-late-frames",
+            "--skip-frames",
+            "--clock-jitter=0",
+            "--clock-synchro=0"
+        ];
+    }
+
+    internal static string[] LowLatencyVlcMediaOptions(bool disableAudio)
+    {
+        var options = new List<string>
+        {
+            $":network-caching={LivePlaybackCacheMs}",
+            $":live-caching={LivePlaybackCacheMs}",
+            $":file-caching={LivePlaybackCacheMs}",
+            $":sout-mux-caching={LivePlaybackCacheMs}",
+            ":rtsp-tcp",
+            ":ipv4-timeout=3000000",
+            ":drop-late-frames",
+            ":skip-frames",
+            ":clock-jitter=0",
+            ":clock-synchro=0"
+        };
+        if (disableAudio)
+        {
+            options.Insert(0, ":no-audio");
+        }
+
+        return options.ToArray();
+    }
+
+    internal static void AddLowLatencyVlcMediaOptions(Media media, bool disableAudio = false)
+    {
+        foreach (var option in LowLatencyVlcMediaOptions(disableAudio))
+        {
+            media.AddOption(option);
+        }
     }
 
     private void RenderTiles()
     {
+        DetachRenderedPlaybackSurfaces();
         TileGrid.Children.Clear();
         _tileStatusFrames.Clear();
         _tileBorders.Clear();
         _tileStatusTextBlocks.Clear();
         _tileAlertStacks.Clear();
         _tileSurfaceHosts.Clear();
+        _tileSurfaceRenderKeys.Clear();
         _tileVideoViews.Clear();
         _tileFfmpegImages.Clear();
         _tileSurfacePlaceholders.Clear();
+        _tileAudioMeterHosts.Clear();
+        _tileAudioMeterViews.Clear();
+        _tileAudioMeterViewLookup.Clear();
+        _lastAudioMeterTargetRefreshAt.Clear();
+        _tileChromeRenderKeys.Clear();
+        _tileStatusTextRenderKeys.Clear();
         _tileRenderedAlertKeys.Clear();
 
         var layout = _config.Layouts.FirstOrDefault(layout => layout.Id == _config.ActiveLayoutId)
@@ -198,17 +297,57 @@ public partial class MainWindow : Window
         TileGrid.Rows = size;
         TileGrid.Columns = size;
 
+        var renderedStreamIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var streamLookup = StreamLookup();
         for (var index = 0; index < size * size; index++)
         {
             var tile = layout?.Tiles.FirstOrDefault(tile => tile.Index == index);
-            var stream = _config.Streams.FirstOrDefault(stream => stream.Id == tile?.StreamId);
+            var stream = StreamForTile(tile, renderedStreamIds, streamLookup);
             TileGrid.Children.Add(CreateTile(stream, index));
         }
     }
 
+    private void DetachRenderedPlaybackSurfaces()
+    {
+        foreach (var view in _tileVideoViews.Values)
+        {
+            view.MediaPlayer = null;
+        }
+
+        foreach (var image in _tileFfmpegImages.Values)
+        {
+            image.Source = null;
+        }
+
+        foreach (var host in _tileSurfaceHosts.Values)
+        {
+            host.Children.Clear();
+        }
+    }
+
+    private StreamConfig? StreamForTile(
+        LayoutTileConfig? tile,
+        ISet<string> renderedStreamIds,
+        IReadOnlyDictionary<string, StreamConfig>? streamLookup = null)
+    {
+        if (string.IsNullOrWhiteSpace(tile?.StreamId))
+        {
+            return null;
+        }
+
+        if (!renderedStreamIds.Add(tile.StreamId))
+        {
+            AppendDesktopLog($"Ignoring duplicate stream assignment while rendering layout {_config.ActiveLayoutId}: tile {tile.Index}, stream {tile.StreamId}");
+            return null;
+        }
+
+        var lookup = streamLookup ?? StreamLookup();
+        return lookup.TryGetValue(tile.StreamId, out var stream) ? stream : null;
+    }
+
     private Border CreateTile(StreamConfig? stream, int index)
     {
-        var alerts = stream is null ? new List<AlertRecord>() : ActiveAlertsFor(stream.Id).ToList();
+        List<AlertRecord> alerts = stream is null ? [] : ActiveAlertsFor(stream.Id);
         var alert = alerts.FirstOrDefault();
         var pendingIssue = stream is null ? null : PendingIssueFor(stream.Id);
         PlaybackSnapshot? snapshot = null;
@@ -218,16 +357,17 @@ public partial class MainWindow : Window
             _playbackSnapshots.TryGetValue(stream.Id, out snapshot);
         }
 
+        var videoFreshness = stream is null ? default : PlaybackVideoFreshnessFor(stream.Id);
         var statusColor = alert is null && pendingIssue is not null
             ? StatusColorForPendingIssue(pendingIssue)
-            : StatusColorFor(stream, alert, isLoaded, snapshot);
+            : StatusColorFor(stream, alert, isLoaded, snapshot, videoFreshness);
         var statusText = alert is null && pendingIssue is not null
             ? $"pending / {pendingIssue}"
-            : StatusTextFor(stream, alert, isLoaded, snapshot);
+            : StatusTextFor(stream, alert, isLoaded, snapshot, videoFreshness);
 
         var root = new Grid
         {
-            Background = BrushFromHex("#05080d"),
+            Background = BrushFromHex("#070b12"),
             ClipToBounds = true
         };
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
@@ -285,6 +425,20 @@ public partial class MainWindow : Window
         videoFrame.Children.Add(surfaceHost);
         SetPlaybackSurface(surfaceHost, stream);
 
+        var audioMeterHost = new Grid
+        {
+            IsHitTestVisible = false,
+            Margin = new Thickness(8, 8, 8, 8),
+            Visibility = Visibility.Collapsed
+        };
+        audioMeterHost.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        audioMeterHost.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        audioMeterHost.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(audioMeterHost, 1);
+        Grid.SetRow(audioMeterHost, 0);
+        Panel.SetZIndex(audioMeterHost, 8);
+        videoFrame.Children.Add(audioMeterHost);
+
         Grid.SetColumn(alertStack, 1);
         Grid.SetRow(alertStack, 0);
         Panel.SetZIndex(alertStack, 10);
@@ -292,8 +446,8 @@ public partial class MainWindow : Window
 
         var bottomBar = new Grid
         {
-            Background = BrushFromHex("#99050a12"),
-            Height = 34
+            Background = BrushFromHex("#d80d111a"),
+            Height = 44
         };
         Grid.SetRow(bottomBar, 1);
         bottomBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -303,10 +457,10 @@ public partial class MainWindow : Window
         {
             Text = stream?.Name ?? $"Tile {index + 1}: Unassigned",
             Foreground = Brushes.White,
-            FontSize = 13,
+            FontSize = 13.5,
             FontWeight = FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(10, 0, 8, 0),
+            Margin = new Thickness(12, 0, 8, 0),
             TextTrimming = TextTrimming.CharacterEllipsis
         };
         bottomBar.Children.Add(streamName);
@@ -317,7 +471,7 @@ public partial class MainWindow : Window
             FontSize = 11,
             FontWeight = FontWeights.SemiBold,
             VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(8, 0, 10, 0),
+            Margin = new Thickness(10, 0, 12, 0),
             TextTrimming = TextTrimming.CharacterEllipsis
         };
         Grid.SetColumn(statusTextBlock, 1);
@@ -326,10 +480,10 @@ public partial class MainWindow : Window
         {
             Content = stream is null ? "Assign" : "Change",
             Tag = index,
-            Height = 24,
-            MinWidth = 62,
-            Margin = new Thickness(0, 4, 8, 4),
-            Opacity = 0.88
+            Height = 26,
+            MinWidth = 66,
+            Margin = new Thickness(0, 5, 8, 5),
+            Opacity = 0.92
         };
         assignButton.Click += TileAssignButton_Click;
         Grid.SetColumn(assignButton, 2);
@@ -338,10 +492,10 @@ public partial class MainWindow : Window
 
         var border = new Border
         {
-            Background = BrushFromHex("#05080d"),
-            BorderBrush = BrushFromHex("#1f2937"),
+            Background = BrushFromHex("#070b12"),
+            BorderBrush = BrushFromHex("#243044"),
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
+            CornerRadius = new CornerRadius(8),
             Margin = new Thickness(3),
             Child = root
         };
@@ -353,8 +507,10 @@ public partial class MainWindow : Window
             _tileStatusTextBlocks[stream.Id] = statusTextBlock;
             _tileAlertStacks[stream.Id] = alertStack;
             _tileSurfaceHosts[stream.Id] = surfaceHost;
+            _tileAudioMeterHosts[stream.Id] = audioMeterHost;
             EnsurePlaybackSurfaceChildren(surfaceHost, stream);
             RenderAlertOverlay(stream.Id, force: true);
+            RenderAudioMeter(stream.Id, force: true);
         }
 
         return border;
@@ -362,34 +518,74 @@ public partial class MainWindow : Window
 
     private void RenderAlerts()
     {
-        var activeCount = _config.AlertHistory.Count(alert => ActiveAlertStatuses.Contains(alert.Status));
-        AlertSummaryText.Text = $"{activeCount} active alerts / {_config.Streams.Count} streams";
+        var activeCount = 0;
+        foreach (var alert in _config.AlertHistory)
+        {
+            if (ActiveAlertStatuses.Contains(alert.Status))
+            {
+                activeCount++;
+            }
+        }
+
+        SetTextIfChanged(AlertSummaryText, $"{activeCount} active alerts / {_config.Streams.Count} streams");
         _alertHistoryWindow?.RefreshAlerts();
         UpdatePlaybackSummary();
-        UpdateAlertActionButtons();
+        UpdateContinuousAlertSound();
     }
 
-    private void UpdateAllTileChrome()
+    private void UpdateAllTileChrome(IReadOnlyList<StreamConfig>? streams = null)
     {
-        foreach (var stream in ActiveLayoutStreams())
+        var layoutStreams = streams ?? ActiveLayoutStreams();
+        var activeAlertsByStream = ActiveAlertsByStream(layoutStreams);
+        foreach (var stream in layoutStreams)
         {
-            UpdateTileChrome(stream);
+            UpdateTileChrome(stream, activeAlertsByStream);
         }
     }
 
-    private void UpdateTileChrome(StreamConfig stream)
+    private void UpdateSingleTileChrome(IReadOnlyList<StreamConfig> streams, string streamId)
     {
-        var alert = ActiveAlertFor(stream.Id);
-        var pendingIssue = alert is null ? PendingIssueFor(stream.Id) : null;
+        foreach (var stream in streams)
+        {
+            if (!string.Equals(stream.Id, streamId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            UpdateTileChrome(stream);
+            return;
+        }
+    }
+
+    private void UpdateTileChrome(
+        StreamConfig stream,
+        IReadOnlyDictionary<string, IReadOnlyList<AlertRecord>>? activeAlertsByStream = null)
+    {
+        var activeAlerts = ActiveAlertsFor(stream.Id, activeAlertsByStream);
+        var alert = activeAlerts.Count > 0 ? activeAlerts[0] : null;
+        var pendingIssue = alert is null ? PendingIssueFor(stream.Id, activeAlerts) : null;
         _playbackSnapshots.TryGetValue(stream.Id, out var snapshot);
         var isLoaded = IsPlaybackLoaded(stream.Id);
+        var videoFreshness = PlaybackVideoFreshnessFor(stream.Id);
         var statusColor = pendingIssue is not null
             ? StatusColorForPendingIssue(pendingIssue)
-            : StatusColorFor(stream, alert, isLoaded, snapshot);
+            : StatusColorFor(stream, alert, isLoaded, snapshot, videoFreshness);
+        var statusTextValue = pendingIssue is not null ? $"pending / {pendingIssue}" : StatusTextFor(stream, alert, isLoaded, snapshot, videoFreshness);
+        var alertOverlayKey = AlertOverlayRenderKey(activeAlerts, limit: 5);
+        UpdateTileStatusText(stream.Id, statusTextValue, statusColor);
+
+        var shouldBlink = alert is not null || pendingIssue is not null;
+        var renderKey = $"{statusColor}|{(shouldBlink ? "blink" : "solid")}|{alertOverlayKey}";
+        if (_tileChromeRenderKeys.TryGetValue(stream.Id, out var previousKey) &&
+            string.Equals(previousKey, renderKey, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _tileChromeRenderKeys[stream.Id] = renderKey;
 
         if (_tileStatusFrames.TryGetValue(stream.Id, out var frames))
         {
-            var shouldBlink = alert is not null || pendingIssue is not null;
             foreach (var frame in frames)
             {
                 ApplyFadeBlink(frame, shouldBlink, statusColor);
@@ -398,19 +594,37 @@ public partial class MainWindow : Window
 
         if (_tileBorders.TryGetValue(stream.Id, out var tileBorder))
         {
-            tileBorder.BorderBrush = BrushFromHex("#1f2937");
+            tileBorder.BorderBrush = BrushFromHex("#243044");
             tileBorder.BorderThickness = new Thickness(1);
             tileBorder.BeginAnimation(OpacityProperty, null);
             tileBorder.Opacity = 1.0;
         }
 
-        if (_tileStatusTextBlocks.TryGetValue(stream.Id, out var statusText))
+        RenderAlertOverlay(stream.Id, activeAlerts: activeAlerts);
+    }
+
+    private void UpdateTileStatusText(string streamId, string text, string statusColor)
+    {
+        var renderKey = $"{statusColor}|{text}";
+        if (_tileStatusTextRenderKeys.TryGetValue(streamId, out var previousKey) &&
+            string.Equals(previousKey, renderKey, StringComparison.Ordinal))
         {
-            statusText.Text = pendingIssue is not null ? $"pending / {pendingIssue}" : StatusTextFor(stream, alert, isLoaded, snapshot);
-            statusText.Foreground = BrushFromHex(statusColor);
+            return;
         }
 
-        RenderAlertOverlay(stream.Id);
+        _tileStatusTextRenderKeys[streamId] = renderKey;
+        if (!_tileStatusTextBlocks.TryGetValue(streamId, out var statusText))
+        {
+            return;
+        }
+
+        SetTextIfChanged(statusText, text);
+
+        var foreground = BrushFromHex(statusColor);
+        if (!ReferenceEquals(statusText.Foreground, foreground))
+        {
+            statusText.Foreground = foreground;
+        }
     }
 
     private static void ApplyFadeBlink(Border frame, bool enabled, string statusColor)
@@ -447,16 +661,17 @@ public partial class MainWindow : Window
         brush.BeginAnimation(SolidColorBrush.ColorProperty, animation);
     }
 
-    private void RenderAlertOverlay(string streamId, bool force = false)
+    private void RenderAlertOverlay(string streamId, bool force = false, IReadOnlyList<AlertRecord>? activeAlerts = null)
     {
         if (!_tileAlertStacks.TryGetValue(streamId, out var stack))
         {
             return;
         }
 
-        var activeAlerts = ActiveAlertsFor(streamId).Take(5).ToList();
-        var renderKey = string.Join("|", activeAlerts.Select(alert =>
-            $"{alert.Id}:{alert.Type}:{alert.Severity}:{alert.Status}:{alert.Message}"));
+        var alerts = activeAlerts is null
+            ? ActiveAlertsFor(streamId)
+            : activeAlerts;
+        var renderKey = AlertOverlayRenderKey(alerts, limit: 5);
         if (!force &&
             _tileRenderedAlertKeys.TryGetValue(streamId, out var previousKey) &&
             string.Equals(previousKey, renderKey, StringComparison.Ordinal))
@@ -466,8 +681,10 @@ public partial class MainWindow : Window
 
         _tileRenderedAlertKeys[streamId] = renderKey;
         stack.Children.Clear();
-        foreach (var alert in activeAlerts)
+        var alertCount = Math.Min(5, alerts.Count);
+        for (var alertIndex = 0; alertIndex < alertCount; alertIndex++)
         {
+            var alert = alerts[alertIndex];
             var row = new Grid();
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -521,6 +738,599 @@ public partial class MainWindow : Window
             banner.SetBinding(FrameworkElement.WidthProperty, new Binding("ActualWidth") { Source = stack });
             stack.Children.Add(banner);
         }
+    }
+
+    private static string AlertOverlayRenderKey(IReadOnlyList<AlertRecord> activeAlerts, int limit = int.MaxValue)
+    {
+        var count = Math.Min(limit, activeAlerts.Count);
+        if (count == 0)
+        {
+            return "";
+        }
+
+        var builder = new StringBuilder();
+        for (var index = 0; index < count; index++)
+        {
+            if (index > 0)
+            {
+                builder.Append('|');
+            }
+
+            var alert = activeAlerts[index];
+            builder
+                .Append(alert.Id)
+                .Append(':')
+                .Append(alert.Type)
+                .Append(':')
+                .Append(alert.Severity)
+                .Append(':')
+                .Append(alert.Status)
+                .Append(':')
+                .Append(alert.Message);
+        }
+
+        return builder.ToString();
+    }
+
+    private void RenderAudioMeter(string streamId, bool force = false)
+    {
+        UpdateAudioMeterTargets(streamId, force);
+    }
+
+    private void RefreshAudioMeterTargets()
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var (streamId, host) in _tileAudioMeterHosts)
+        {
+            var refreshInterval = host.Visibility == Visibility.Visible
+                ? AudioMeterTargetRefreshInterval
+                : AudioMeterHiddenProbeInterval;
+            if (!_lastAudioMeterTargetRefreshAt.TryGetValue(streamId, out var refreshedAt) ||
+                now - refreshedAt >= refreshInterval)
+            {
+                UpdateAudioMeterTargets(streamId, force: false, now);
+            }
+        }
+    }
+
+    private void AudioMeterCompositionTarget_Rendering(object? sender, EventArgs e)
+    {
+        if (_tileAudioMeterViews.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var (streamId, views) in _tileAudioMeterViews)
+        {
+            if (!_tileAudioMeterHosts.TryGetValue(streamId, out var host) ||
+                host.Visibility != Visibility.Visible)
+            {
+                continue;
+            }
+
+            AdvanceAudioMeterViews(views, immediate: false);
+        }
+    }
+
+    private void UpdateAudioMeterTargets(string streamId, bool force = false)
+    {
+        UpdateAudioMeterTargets(streamId, force, DateTimeOffset.UtcNow);
+    }
+
+    private void UpdateAudioMeterTargets(string streamId, bool force, DateTimeOffset now)
+    {
+        if (!_tileAudioMeterHosts.TryGetValue(streamId, out var host))
+        {
+            return;
+        }
+
+        _lastAudioMeterTargetRefreshAt[streamId] = now;
+        if (!TryGetFreshAudioSnapshot(streamId, out var snapshot))
+        {
+            host.Visibility = Visibility.Collapsed;
+            if (_tileAudioMeterViews.TryGetValue(streamId, out var staleViews))
+            {
+                ResetAudioMeterViews(staleViews);
+            }
+
+            return;
+        }
+
+        var channels = AudioMeterChannels(snapshot);
+        var existingViews = _tileAudioMeterViews.TryGetValue(streamId, out var currentViews)
+            ? currentViews
+            : [];
+        var existingViewLookup = _tileAudioMeterViewLookup.TryGetValue(streamId, out var currentViewLookup)
+            ? currentViewLookup
+            : null;
+        if (!force &&
+            existingViewLookup is not null &&
+            AudioMeterViewsMatch(existingViewLookup, channels))
+        {
+            host.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            host.Children.Clear();
+            existingViews = CreateAudioMeterPanels(host, channels);
+            _tileAudioMeterViews[streamId] = existingViews;
+            existingViewLookup = AudioMeterViewLookup(existingViews);
+            _tileAudioMeterViewLookup[streamId] = existingViewLookup;
+        }
+
+        foreach (var channel in channels)
+        {
+            if (existingViewLookup is null ||
+                !existingViewLookup.TryGetValue(channel.Channel, out var view))
+            {
+                continue;
+            }
+
+            view.TargetLevelRatio = AudioMeterRatio(channel.LevelDb);
+            view.TargetPeakRatio = AudioMeterRatio(channel.PeakDb);
+            view.Clipping = channel.ClippingSamples > 0 || channel.PeakDb >= -1;
+            view.LastLevelDb = channel.LevelDb;
+            view.LastPeakDb = channel.PeakDb;
+            if (force || now - view.LastTooltipAt >= TimeSpan.FromMilliseconds(250))
+            {
+                view.Track.ToolTip = $"CH{channel.Channel}: {channel.LevelDb:0.0} dBFS / peak {channel.PeakDb:0.0} dBFS";
+                view.LastTooltipAt = now;
+            }
+        }
+
+        host.Visibility = Visibility.Visible;
+        AdvanceAudioMeterViews(streamId, force);
+    }
+
+    private static bool AudioMeterViewsMatch(AudioMeterView[] views, AudioChannelLevel[] channels)
+    {
+        if (views.Length != channels.Length)
+        {
+            return false;
+        }
+
+        foreach (var channel in channels)
+        {
+            if (FindAudioMeterView(views, channel.Channel) is null)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool AudioMeterViewsMatch(IReadOnlyDictionary<int, AudioMeterView> viewsByChannel, AudioChannelLevel[] channels)
+    {
+        if (viewsByChannel.Count != channels.Length)
+        {
+            return false;
+        }
+
+        foreach (var channel in channels)
+        {
+            if (!viewsByChannel.ContainsKey(channel.Channel))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static AudioMeterView? FindAudioMeterView(AudioMeterView[] views, int channel)
+    {
+        foreach (var view in views)
+        {
+            if (view.Channel == channel)
+            {
+                return view;
+            }
+        }
+
+        return null;
+    }
+
+    private static Dictionary<int, AudioMeterView> AudioMeterViewLookup(AudioMeterView[] views)
+    {
+        var lookup = new Dictionary<int, AudioMeterView>(views.Length);
+        foreach (var view in views)
+        {
+            lookup[view.Channel] = view;
+        }
+
+        return lookup;
+    }
+
+    private AudioMeterView[] CreateAudioMeterPanels(Grid host, AudioChannelLevel[] channels)
+    {
+        var views = new List<AudioMeterView>();
+        var (leftChannels, rightChannels) = SplitAudioChannelsForSides(channels);
+        if (leftChannels.Length > 0)
+        {
+            var leftPanel = CreateAudioMeterSidePanel(leftChannels, HorizontalAlignment.Left, views);
+            Grid.SetColumn(leftPanel, 0);
+            host.Children.Add(leftPanel);
+        }
+
+        if (rightChannels.Length > 0)
+        {
+            var rightPanel = CreateAudioMeterSidePanel(rightChannels, HorizontalAlignment.Right, views);
+            Grid.SetColumn(rightPanel, 2);
+            host.Children.Add(rightPanel);
+        }
+
+        return views.ToArray();
+    }
+
+    private bool TryGetFreshAudioSnapshot(string streamId, out AudioLevelSnapshot snapshot)
+    {
+        if (_ffmpegPlaybackSessions.TryGetValue(streamId, out var ffmpegSession) &&
+            ffmpegSession.TryGetAudioSnapshot(out snapshot) &&
+            DateTimeOffset.UtcNow - snapshot.LastSamplesAt <= TimeSpan.FromSeconds(3))
+        {
+            return true;
+        }
+
+        if (_audioMonitors.TryGetValue(streamId, out var monitor) &&
+            monitor.TryGetSnapshot(out snapshot) &&
+            DateTimeOffset.UtcNow - snapshot.LastSamplesAt <= TimeSpan.FromSeconds(3))
+        {
+            return true;
+        }
+
+        snapshot = EmptyAudioLevelSnapshot();
+        return false;
+    }
+
+    private static (AudioChannelLevel[] Left, AudioChannelLevel[] Right) SplitAudioChannelsForSides(AudioChannelLevel[] channels)
+    {
+        if (channels.Length <= 1)
+        {
+            return (channels, Array.Empty<AudioChannelLevel>());
+        }
+
+        var leftCount = 0;
+        var rightCount = 0;
+        foreach (var channel in channels)
+        {
+            if (channel.Channel % 2 == 1)
+            {
+                leftCount++;
+            }
+            else
+            {
+                rightCount++;
+            }
+        }
+
+        if (leftCount == 0 || rightCount == 0)
+        {
+            var splitIndex = (channels.Length + 1) / 2;
+            var splitLeft = new AudioChannelLevel[splitIndex];
+            var splitRight = new AudioChannelLevel[channels.Length - splitIndex];
+            Array.Copy(channels, 0, splitLeft, 0, splitLeft.Length);
+            Array.Copy(channels, splitIndex, splitRight, 0, splitRight.Length);
+            return (splitLeft, splitRight);
+        }
+
+        var left = new AudioChannelLevel[leftCount];
+        var right = new AudioChannelLevel[rightCount];
+        var leftIndex = 0;
+        var rightIndex = 0;
+        foreach (var channel in channels)
+        {
+            if (channel.Channel % 2 == 1)
+            {
+                left[leftIndex++] = channel;
+            }
+            else
+            {
+                right[rightIndex++] = channel;
+            }
+        }
+
+        return (left, right);
+    }
+
+    private void AdvanceAudioMeterViews(string streamId, bool immediate)
+    {
+        if (!_tileAudioMeterViews.TryGetValue(streamId, out var views))
+        {
+            return;
+        }
+
+        AdvanceAudioMeterViews(views, immediate);
+    }
+
+    private void AdvanceAudioMeterViews(AudioMeterView[] views, bool immediate)
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var view in views)
+        {
+            var elapsedMs = view.LastAnimationAt > DateTimeOffset.MinValue
+                ? Math.Clamp((now - view.LastAnimationAt).TotalMilliseconds, 1, AudioMeterMaxAnimationDeltaMs)
+                : AudioMeterNominalFrameMs;
+            view.LastAnimationAt = now;
+            var elapsedFrames = elapsedMs / AudioMeterNominalFrameMs;
+            var levelBlend = immediate
+                ? 1
+                : 1 - Math.Pow(1 - AudioMeterLevelBlendPerFrame, elapsedFrames);
+            var peakDecay = immediate
+                ? 0
+                : Math.Pow(AudioMeterPeakDecayPerFrame, elapsedFrames);
+
+            view.DisplayedLevelRatio = immediate
+                ? view.TargetLevelRatio
+                : view.DisplayedLevelRatio + (view.TargetLevelRatio - view.DisplayedLevelRatio) * levelBlend;
+            view.DisplayedPeakRatio = immediate
+                ? view.TargetPeakRatio
+                : Math.Max(view.TargetPeakRatio, view.DisplayedPeakRatio * peakDecay);
+            var levelRatio = Math.Clamp(view.DisplayedLevelRatio, 1 / AudioMeterHeight, 1);
+            var peakTop = Math.Clamp(AudioMeterHeight - AudioMeterHeight * view.DisplayedPeakRatio, 0, AudioMeterHeight - 2);
+            SetAudioMeterFillClip(view, levelRatio);
+            view.PeakOffset.Y = peakTop;
+            if (view.DisplayedClipping != view.Clipping)
+            {
+                view.PeakMarker.Background = view.Clipping ? BrushFromHex("#fed7aa") : BrushFromHex("#e2e8f0");
+                view.DisplayedClipping = view.Clipping;
+            }
+        }
+    }
+
+    private static void ResetAudioMeterViews(AudioMeterView[] views)
+    {
+        foreach (var view in views)
+        {
+            view.TargetLevelRatio = 0;
+            view.TargetPeakRatio = 0;
+            view.DisplayedLevelRatio = 0;
+            view.DisplayedPeakRatio = 0;
+            view.Clipping = false;
+            view.DisplayedClipping = false;
+            view.LastAnimationAt = DateTimeOffset.MinValue;
+            SetAudioMeterFillClip(view, 1 / AudioMeterHeight);
+            view.PeakOffset.Y = AudioMeterHeight - 2;
+            view.PeakMarker.Background = BrushFromHex("#e2e8f0");
+        }
+    }
+
+    private static void SetAudioMeterFillClip(AudioMeterView view, double levelRatio)
+    {
+        var visibleHeight = AudioMeterHeight * Math.Clamp(levelRatio, 0, 1);
+        view.FillClip.Rect = new Rect(0, AudioMeterHeight - visibleHeight, AudioMeterBarWidth, visibleHeight);
+    }
+
+    private const double AudioMeterHeight = 120;
+    private const double AudioMeterBarWidth = 10;
+    private const double AudioMeterTrackWidth = 14;
+    private const double AudioMeterScaleWidth = 32;
+    private const int AudioMeterMaxChannels = 16;
+    private static readonly TimeSpan AudioMeterTargetRefreshInterval = TimeSpan.FromMilliseconds(50);
+    private static readonly TimeSpan AudioMeterHiddenProbeInterval = TimeSpan.FromMilliseconds(250);
+    private const double AudioMeterNominalFrameMs = 33;
+    private const double AudioMeterMaxAnimationDeltaMs = 100;
+    private const double AudioMeterLevelBlendPerFrame = 0.38;
+    private const double AudioMeterPeakDecayPerFrame = 0.93;
+    private static readonly Brush AudioMeterActiveBrush = CreateAudioMeterActiveBrush();
+
+    private static AudioChannelLevel[] AudioMeterChannels(AudioLevelSnapshot snapshot)
+    {
+        if (snapshot.Channels.Length == 0)
+        {
+            return [new AudioChannelLevel(1, snapshot.LevelDb, snapshot.PeakDb, snapshot.ClippingSamples)];
+        }
+
+        if (snapshot.Channels.Length <= AudioMeterMaxChannels)
+        {
+            return snapshot.Channels;
+        }
+
+        var channels = new AudioChannelLevel[AudioMeterMaxChannels];
+        Array.Copy(snapshot.Channels, channels, AudioMeterMaxChannels);
+        return channels;
+    }
+
+    private static FrameworkElement CreateAudioMeterSidePanel(AudioChannelLevel[] channels, HorizontalAlignment alignment, ICollection<AudioMeterView> views)
+    {
+        var meterStack = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = alignment,
+            MaxWidth = 116
+        };
+        var count = Math.Min(8, channels.Length);
+        for (var index = 0; index < count; index++)
+        {
+            meterStack.Children.Add(CreateAudioMeter(channels[index].Channel, views));
+        }
+
+        var content = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        if (alignment == HorizontalAlignment.Right)
+        {
+            content.Children.Add(CreateAudioMeterScale(labelsOnRight: false));
+            content.Children.Add(meterStack);
+        }
+        else
+        {
+            content.Children.Add(meterStack);
+            content.Children.Add(CreateAudioMeterScale(labelsOnRight: true));
+        }
+
+        return new Border
+        {
+            Background = BrushFromHex("#d9070b12"),
+            BorderBrush = BrushFromHex("#66475566"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(5, 6, 5, 5),
+            Child = content
+        };
+    }
+
+    private static FrameworkElement CreateAudioMeter(int channel, ICollection<AudioMeterView> views)
+    {
+        var trackCanvas = new Canvas
+        {
+            Width = AudioMeterTrackWidth,
+            Height = AudioMeterHeight,
+            ClipToBounds = true,
+            Background = BrushFromHex("#080d16")
+        };
+        AddAudioMeterGrid(trackCanvas);
+        var fillClip = new RectangleGeometry(new Rect(0, AudioMeterHeight - 1, AudioMeterBarWidth, 1));
+        var meterFill = new Border
+        {
+            Width = AudioMeterBarWidth,
+            Height = AudioMeterHeight,
+            Background = AudioMeterActiveBrush,
+            Clip = fillClip,
+            SnapsToDevicePixels = true,
+            UseLayoutRounding = true
+        };
+        Canvas.SetLeft(meterFill, 2);
+        Canvas.SetTop(meterFill, 0);
+        trackCanvas.Children.Add(meterFill);
+        var peakOffset = new TranslateTransform(0, AudioMeterHeight - 2);
+        var peakMarker = new Border
+        {
+            Width = AudioMeterBarWidth,
+            Height = 2,
+            Background = BrushFromHex("#e2e8f0"),
+            CornerRadius = new CornerRadius(1),
+            RenderTransform = peakOffset,
+            SnapsToDevicePixels = true,
+            UseLayoutRounding = true
+        };
+        Canvas.SetLeft(peakMarker, 2);
+        Canvas.SetTop(peakMarker, 0);
+        trackCanvas.Children.Add(peakMarker);
+        var meterTrack = new Border
+        {
+            Width = AudioMeterTrackWidth,
+            Height = AudioMeterHeight,
+            Background = BrushFromHex("#101827"),
+            BorderBrush = BrushFromHex("#64748b"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(2),
+            Child = trackCanvas,
+            ToolTip = $"CH{channel}: waiting"
+        };
+        var label = new TextBlock
+        {
+            Text = $"CH{channel}",
+            Foreground = BrushFromHex("#cbd5e1"),
+            FontSize = 9,
+            FontWeight = FontWeights.Bold,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 3)
+        };
+        var root = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Width = 22,
+            Margin = new Thickness(1, 0, 1, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        root.Children.Add(label);
+        root.Children.Add(meterTrack);
+        views.Add(new AudioMeterView(channel, meterTrack, meterFill, fillClip, peakMarker, peakOffset));
+        return root;
+    }
+
+    private static double AudioMeterRatio(double levelDb)
+    {
+        if (double.IsNaN(levelDb) || double.IsInfinity(levelDb))
+        {
+            return 0;
+        }
+
+        return Math.Clamp((levelDb + 60) / 60, 0.02, 1);
+    }
+
+    private static Brush CreateAudioMeterActiveBrush()
+    {
+        var brush = new LinearGradientBrush
+        {
+            StartPoint = new Point(0.5, 0),
+            EndPoint = new Point(0.5, 1)
+        };
+        brush.GradientStops.Add(new GradientStop(ColorFromHex("#ef4444"), 0.00));
+        brush.GradientStops.Add(new GradientStop(ColorFromHex("#ef4444"), 0.10));
+        brush.GradientStops.Add(new GradientStop(ColorFromHex("#facc15"), 0.11));
+        brush.GradientStops.Add(new GradientStop(ColorFromHex("#facc15"), 0.30));
+        brush.GradientStops.Add(new GradientStop(ColorFromHex("#22c55e"), 0.31));
+        brush.GradientStops.Add(new GradientStop(ColorFromHex("#22c55e"), 1.00));
+        brush.Freeze();
+        return brush;
+    }
+
+    private static void AddAudioMeterGrid(Canvas canvas)
+    {
+        for (var db = -60; db <= 0; db += 3)
+        {
+            var major = db % 6 == 0;
+            var y = AudioMeterYForDb(db);
+            var tick = new Border
+            {
+                Width = major ? AudioMeterTrackWidth : AudioMeterTrackWidth - 4,
+                Height = 1,
+                Background = major ? BrushFromHex("#7c8ba3") : BrushFromHex("#344155"),
+                Opacity = major ? 0.72 : 0.48
+            };
+            Canvas.SetLeft(tick, 0);
+            Canvas.SetTop(tick, Math.Round(y));
+            canvas.Children.Add(tick);
+        }
+    }
+
+    private static FrameworkElement CreateAudioMeterScale(bool labelsOnRight)
+    {
+        var canvas = new Canvas
+        {
+            Width = AudioMeterScaleWidth,
+            Height = AudioMeterHeight + 14,
+            Margin = labelsOnRight ? new Thickness(3, 15, 0, 0) : new Thickness(0, 15, 3, 0)
+        };
+        for (var db = 0; db >= -60; db -= 6)
+        {
+            var y = AudioMeterYForDb(db);
+            var tick = new Border
+            {
+                Width = 5,
+                Height = 1,
+                Background = BrushFromHex("#94a3b8")
+            };
+            Canvas.SetLeft(tick, labelsOnRight ? 0 : AudioMeterScaleWidth - 5);
+            Canvas.SetTop(tick, Math.Round(y));
+            canvas.Children.Add(tick);
+
+            var label = new TextBlock
+            {
+                Text = db == 0 ? "0.0" : db.ToString(CultureInfo.InvariantCulture),
+                Foreground = BrushFromHex("#dbeafe"),
+                FontSize = 9,
+                LineHeight = 9,
+                TextAlignment = labelsOnRight ? TextAlignment.Left : TextAlignment.Right,
+                Width = AudioMeterScaleWidth - 7
+            };
+            Canvas.SetLeft(label, labelsOnRight ? 7 : 0);
+            Canvas.SetTop(label, Math.Clamp(y - 5, 0, AudioMeterHeight - 5));
+            canvas.Children.Add(label);
+        }
+
+        return canvas;
+    }
+
+    private static double AudioMeterYForDb(double db)
+    {
+        var ratio = Math.Clamp((db + 60) / 60, 0, 1);
+        return AudioMeterHeight - AudioMeterHeight * ratio;
     }
 
     private static Button OverlayActionButton(string text)
@@ -673,6 +1483,7 @@ public partial class MainWindow : Window
 
         _config.AlertSoundEnabled = AlertSoundCheck.IsChecked == true;
         LocalConfigStore.Save(_config);
+        UpdateContinuousAlertSound();
         UpdateFooter(_config.AlertSoundEnabled ? "Alert sound enabled." : "Alert sound muted.");
     }
 
@@ -690,13 +1501,26 @@ public partial class MainWindow : Window
         _config.ClientToken = ClientTokenBox.Password.Trim();
         _config.ServerSyncEnabled = ServerSyncCheck.IsChecked == true;
         LocalConfigStore.Save(_config);
-        ModeText.Text = _config.ServerSyncEnabled ? $"Server sync: {_config.ServerUrl}" : "Standalone local mode";
-        ServerSyncStatusText.Text = _config.ServerSyncEnabled ? "server sync: enabled" : "server sync: disabled";
-        ServerClientSummaryText.Text = _config.ServerSyncEnabled ? "server clients: pending" : "server clients: unavailable";
+        SetTextIfChanged(ModeText, _config.ServerSyncEnabled ? $"Server sync: {_config.ServerUrl}" : "Standalone local mode");
+        SetTextIfChanged(ServerSyncStatusText, _config.ServerSyncEnabled ? "server sync: enabled" : "server sync: disabled");
+        SetTextIfChanged(ServerClientSummaryText, _config.ServerSyncEnabled ? "server clients: pending" : "server clients: unavailable");
         _ = SyncWithServerAsync(force: true);
     }
 
     private async void StartPlaybackButton_Click(object sender, RoutedEventArgs e)
+    {
+        await StartPlaybackForActiveLayoutStreamsAsync("Starting playback", restartLoaded: true);
+    }
+
+    private void QueueInitialPlaybackStart()
+    {
+        _ = Dispatcher.BeginInvoke(new Action(async () =>
+        {
+            await StartPlaybackForActiveLayoutStreamsAsync("Auto-starting receivers", restartLoaded: false);
+        }), DispatcherPriority.ContextIdle);
+    }
+
+    private async System.Threading.Tasks.Task StartPlaybackForActiveLayoutStreamsAsync(string actionLabel, bool restartLoaded)
     {
         if (_playbackStartInFlight)
         {
@@ -713,7 +1537,7 @@ public partial class MainWindow : Window
         StartPlaybackButton.IsEnabled = false;
         StopPlaybackButton.IsEnabled = false;
         _playbackTimer.Stop();
-        UpdateFooter($"Starting playback for {streams.Count} layout streams...");
+        UpdateFooter($"{actionLabel} for {streams.Count} layout streams...");
 
         try
         {
@@ -725,11 +1549,17 @@ public partial class MainWindow : Window
                     continue;
                 }
 
+                if (!restartLoaded && IsPlaybackLoaded(stream.Id))
+                {
+                    skipped++;
+                    continue;
+                }
+
                 try
                 {
                     await StartStreamPlaybackAsync(stream);
                     started++;
-                    UpdateFooter($"Starting playback: {started} started, {skipped} skipped, {failed} failed...");
+                    UpdateFooter($"{actionLabel}: {started} started, {skipped} skipped, {failed} failed...");
                 }
                 catch (Exception ex)
                 {
@@ -741,7 +1571,7 @@ public partial class MainWindow : Window
 
             UpdateAllTileChrome();
             UpdatePlaybackSummary();
-            var summary = $"Playback started: {started}, skipped: {skipped}, failed: {failed}.";
+            var summary = $"{actionLabel} complete: {started} started, {skipped} skipped, {failed} failed.";
             UpdateFooter(lastError is null ? summary : $"{summary} Last error: {lastError}");
         }
         finally
@@ -799,17 +1629,12 @@ public partial class MainWindow : Window
 
     private void MainLayoutCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_isLoading || MainLayoutCombo.SelectedItem is not LayoutConfig layout)
+        if (_isLoading || _layoutSelectionInProgress || MainLayoutCombo.SelectedItem is not LayoutConfig layout)
         {
             return;
         }
 
-        _config.ActiveLayoutId = layout.Id;
-        LayoutCombo.SelectedItem = layout;
-        LocalConfigStore.Save(_config);
-        RenderTiles();
-        UpdatePlaybackSummary();
-        UpdateFooter($"Layout changed to {layout.Name}.");
+        ApplyLayoutSelection(layout);
     }
 
     private void TileAssignButton_Click(object sender, RoutedEventArgs e)
@@ -973,22 +1798,49 @@ public partial class MainWindow : Window
 
     internal void LayoutCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_isLoading || LayoutCombo.SelectedItem is not LayoutConfig layout)
+        if (_isLoading || _layoutSelectionInProgress || LayoutCombo.SelectedItem is not LayoutConfig layout)
         {
             return;
         }
 
-        _config.ActiveLayoutId = layout.Id;
-        MainLayoutCombo.SelectedItem = layout;
-        LocalConfigStore.Save(_config);
-        RenderTiles();
-        UpdatePlaybackSummary();
-        UpdateFooter($"Layout changed to {layout.Name}.");
+        ApplyLayoutSelection(layout);
+    }
+
+    private void ApplyLayoutSelection(LayoutConfig layout)
+    {
+        if (_layoutSelectionInProgress)
+        {
+            return;
+        }
+
+        _layoutSelectionInProgress = true;
+        try
+        {
+            _config.ActiveLayoutId = layout.Id;
+            if (!ReferenceEquals(MainLayoutCombo.SelectedItem, layout))
+            {
+                MainLayoutCombo.SelectedItem = layout;
+            }
+
+            if (!ReferenceEquals(LayoutCombo.SelectedItem, layout))
+            {
+                LayoutCombo.SelectedItem = layout;
+            }
+
+            LocalConfigStore.Save(_config);
+            RenderTiles();
+            UpdatePlaybackSummary();
+            UpdateFooter($"Layout changed to {layout.Name}.");
+        }
+        finally
+        {
+            _layoutSelectionInProgress = false;
+        }
     }
 
     private void UpdateFooter(string message)
     {
-        FooterText.Text = $"{message} Logs: {LocalConfigStore.LogDirectory}";
+        SetTextIfChanged(FooterText, $"{message} Logs: {LocalConfigStore.LogDirectory}");
     }
 
     private static void AppendDesktopLog(string message)
@@ -1115,27 +1967,54 @@ public partial class MainWindow : Window
         var snapshotAvailable = _playbackSnapshots.TryGetValue(stream.Id, out var snapshot);
         var showVlcVideo = hasPlayer &&
             snapshotAvailable &&
-            string.Equals(snapshot!.State, "playing", StringComparison.OrdinalIgnoreCase);
+            HasPresentedVlcVideo(stream.Id, snapshot!);
         var showFfmpegVideo = hasFfmpegSession &&
             snapshotAvailable &&
             string.Equals(snapshot!.State, "playing", StringComparison.OrdinalIgnoreCase) &&
-            ffmpegSession!.HasFrame;
+            ffmpegSession!.HasPresentedFrame;
+        var surfaceKey = string.Join("|",
+            hasPlayer ? "vlc" : "no-vlc",
+            hasPlayer ? player!.GetHashCode().ToString(CultureInfo.InvariantCulture) : "no-player-ref",
+            hasFfmpegSession ? "ffmpeg" : "no-ffmpeg",
+            hasFfmpegSession ? ffmpegSession!.GetHashCode().ToString(CultureInfo.InvariantCulture) : "no-ffmpeg-ref",
+            snapshotAvailable ? snapshot!.State : "no-snapshot",
+            showVlcVideo ? "has-vlc-presented-video" : "no-vlc-presented-video",
+            showVlcVideo ? "show-vlc" : "hide-vlc",
+            showFfmpegVideo ? "show-ffmpeg" : "hide-ffmpeg",
+            hasFfmpegSession && ffmpegSession!.HasPresentedFrame ? "has-presented-frame" : "no-presented-frame");
+        if (_tileSurfaceRenderKeys.TryGetValue(stream.Id, out var previousSurfaceKey) &&
+            string.Equals(previousSurfaceKey, surfaceKey, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _tileSurfaceRenderKeys[stream.Id] = surfaceKey;
         if (_tileVideoViews.TryGetValue(stream.Id, out var videoView))
         {
-            videoView.MediaPlayer = hasPlayer ? player : null;
+            var desiredPlayer = hasPlayer ? player : null;
+            if (!ReferenceEquals(videoView.MediaPlayer, desiredPlayer))
+            {
+                videoView.MediaPlayer = desiredPlayer;
+            }
+
             videoView.Visibility = showVlcVideo ? Visibility.Visible : Visibility.Hidden;
         }
 
         if (_tileFfmpegImages.TryGetValue(stream.Id, out var image))
         {
-            image.Source = hasFfmpegSession ? ffmpegSession!.Bitmap : null;
+            var desiredSource = hasFfmpegSession ? ffmpegSession!.Bitmap : null;
+            if (!ReferenceEquals(image.Source, desiredSource))
+            {
+                image.Source = desiredSource;
+            }
+
             image.Visibility = showFfmpegVideo ? Visibility.Visible : Visibility.Hidden;
         }
 
         if (_tileSurfacePlaceholders.TryGetValue(stream.Id, out var placeholder))
         {
             var loaded = hasPlayer || hasFfmpegSession;
-            placeholder.Text = loaded ? "Playback starting" : "Playback stopped";
+            SetTextIfChanged(placeholder, loaded ? "Playback starting" : "Playback stopped");
             placeholder.Visibility = showVlcVideo || showFfmpegVideo ? Visibility.Collapsed : Visibility.Visible;
         }
     }
@@ -1197,6 +2076,57 @@ public partial class MainWindow : Window
         PopulateAlertProfileEditor(AlertProfileCombo.SelectedItem as AlertProfileConfig);
     }
 
+    internal void AddAlertProfileButton_Click(object sender, RoutedEventArgs e)
+    {
+        var profile = CopyAlertProfile(new AlertProfileConfig(), CreateAlertProfileId(), UniqueAlertProfileName("New profile"));
+        _config.AlertProfiles.Add(profile);
+        RefreshAlertProfileSelectors(profile.Id);
+        LocalConfigStore.Save(_config);
+        UpdateFooter($"Created alert profile {profile.Name}.");
+    }
+
+    internal void DuplicateAlertProfileButton_Click(object sender, RoutedEventArgs e)
+    {
+        var source = AlertProfileCombo.SelectedItem as AlertProfileConfig ?? _config.AlertProfiles.FirstOrDefault();
+        if (source is null)
+        {
+            AddAlertProfileButton_Click(sender, e);
+            return;
+        }
+
+        var profile = CopyAlertProfile(source, CreateAlertProfileId(), UniqueAlertProfileName($"{source.Name} copy"));
+        _config.AlertProfiles.Add(profile);
+        RefreshAlertProfileSelectors(profile.Id);
+        LocalConfigStore.Save(_config);
+        UpdateFooter($"Duplicated alert profile {source.Name}.");
+    }
+
+    internal void DeleteAlertProfileButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (AlertProfileCombo.SelectedItem is not AlertProfileConfig profile)
+        {
+            UpdateFooter("Select an alert profile first.");
+            return;
+        }
+
+        if (_config.AlertProfiles.Count <= 1)
+        {
+            UpdateFooter("Keep at least one alert profile.");
+            return;
+        }
+
+        _config.AlertProfiles.Remove(profile);
+        var replacement = _config.AlertProfiles.FirstOrDefault();
+        foreach (var stream in _config.Streams.Where(stream => string.Equals(stream.AlertProfileId, profile.Id, StringComparison.OrdinalIgnoreCase)))
+        {
+            stream.AlertProfileId = replacement?.Id ?? "default";
+        }
+
+        RefreshAlertProfileSelectors(replacement?.Id);
+        LocalConfigStore.Save(_config);
+        UpdateFooter($"Deleted alert profile {profile.Name}.");
+    }
+
     internal void ApplyAlertProfileButton_Click(object sender, RoutedEventArgs e)
     {
         if (AlertProfileCombo.SelectedItem is not AlertProfileConfig profile)
@@ -1205,10 +2135,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        profile.Name = UniqueAlertProfileName(AlertProfileNameText.Text, profile.Id);
         profile.BlackThreshold = ReadProfileDouble(BlackThresholdText, profile.BlackThreshold, 0, 1);
         profile.BlackPixelThreshold = ReadProfileDouble(BlackPixelThresholdText, profile.BlackPixelThreshold, 0, 1);
         profile.BlackPixelRatioThreshold = ReadProfileDouble(BlackPixelRatioText, profile.BlackPixelRatioThreshold, 0, 1);
-        profile.MinBlackDurationSec = ReadProfileDouble(MinBlackDurationText, profile.MinBlackDurationSec, 0.1, 3600);
+        profile.MinBlackDurationSec = 0;
         profile.FreezeDifferenceThreshold = ReadProfileDouble(FreezeDifferenceText, profile.FreezeDifferenceThreshold, 0, 1);
         profile.MinFreezeDurationSec = ReadProfileDouble(MinFreezeDurationText, profile.MinFreezeDurationSec, 0.1, 3600);
         profile.MinFreezeFrames = ReadProfileInt(MinFreezeFramesText, profile.MinFreezeFrames, 1, 100000);
@@ -1219,7 +2150,7 @@ public partial class MainWindow : Window
         profile.MinSilenceDurationSec = ReadProfileDouble(MinSilenceDurationText, profile.MinSilenceDurationSec, 0.1, 3600);
         profile.ClippingCountThreshold = ReadProfileInt(ClippingCountText, profile.ClippingCountThreshold, 1, 1000000);
         LocalConfigStore.Save(_config);
-        PopulateAlertProfileEditor(profile);
+        RefreshAlertProfileSelectors(profile.Id);
         UpdateFooter($"Updated alert profile {profile.Name}.");
     }
 
@@ -1227,12 +2158,14 @@ public partial class MainWindow : Window
     {
         profile ??= _config.AlertProfiles.FirstOrDefault();
         var enabled = profile is not null;
+        AlertProfileNameText.IsEnabled = enabled;
+        DuplicateAlertProfileButton.IsEnabled = enabled;
+        DeleteAlertProfileButton.IsEnabled = enabled && _config.AlertProfiles.Count > 1;
         foreach (var control in new TextBox[]
         {
             BlackThresholdText,
             BlackPixelThresholdText,
             BlackPixelRatioText,
-            MinBlackDurationText,
             FreezeDifferenceText,
             MinFreezeDurationText,
             MinFreezeFramesText,
@@ -1249,13 +2182,14 @@ public partial class MainWindow : Window
 
         if (profile is null)
         {
+            AlertProfileNameText.Text = "";
             return;
         }
 
+        AlertProfileNameText.Text = profile.Name;
         BlackThresholdText.Text = FormatProfileNumber(profile.BlackThreshold);
         BlackPixelThresholdText.Text = FormatProfileNumber(profile.BlackPixelThreshold);
         BlackPixelRatioText.Text = FormatProfileNumber(profile.BlackPixelRatioThreshold);
-        MinBlackDurationText.Text = FormatProfileNumber(profile.MinBlackDurationSec);
         FreezeDifferenceText.Text = FormatProfileNumber(profile.FreezeDifferenceThreshold);
         MinFreezeDurationText.Text = FormatProfileNumber(profile.MinFreezeDurationSec);
         MinFreezeFramesText.Text = profile.MinFreezeFrames.ToString(CultureInfo.InvariantCulture);
@@ -1265,6 +2199,77 @@ public partial class MainWindow : Window
         SilenceThresholdText.Text = FormatProfileNumber(profile.SilenceThresholdDb);
         MinSilenceDurationText.Text = FormatProfileNumber(profile.MinSilenceDurationSec);
         ClippingCountText.Text = profile.ClippingCountThreshold.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private void RefreshAlertProfileSelectors(string? selectedProfileId)
+    {
+        var selectedStreamId = (StreamsList.SelectedItem as StreamConfig)?.Id;
+        var selectedStream = _config.Streams.FirstOrDefault(stream => string.Equals(stream.Id, selectedStreamId, StringComparison.OrdinalIgnoreCase));
+        var selectedProfile = string.IsNullOrWhiteSpace(selectedProfileId)
+            ? _config.AlertProfiles.FirstOrDefault()
+            : _config.AlertProfiles.FirstOrDefault(profile => string.Equals(profile.Id, selectedProfileId, StringComparison.OrdinalIgnoreCase))
+                ?? _config.AlertProfiles.FirstOrDefault();
+
+        AlertProfileCombo.ItemsSource = null;
+        StreamAlertProfileCombo.ItemsSource = null;
+        AlertProfileCombo.ItemsSource = _config.AlertProfiles;
+        StreamAlertProfileCombo.ItemsSource = _config.AlertProfiles;
+        AlertProfileCombo.SelectedItem = selectedProfile;
+        StreamAlertProfileCombo.SelectedItem = selectedStream is null
+            ? selectedProfile
+            : _config.AlertProfiles.FirstOrDefault(profile => string.Equals(profile.Id, selectedStream.AlertProfileId, StringComparison.OrdinalIgnoreCase))
+                ?? selectedProfile;
+        PopulateAlertProfileEditor(selectedProfile);
+    }
+
+    private string CreateAlertProfileId()
+    {
+        string id;
+        do
+        {
+            id = $"profile-{Guid.NewGuid():N}"[..20];
+        }
+        while (_config.AlertProfiles.Any(profile => string.Equals(profile.Id, id, StringComparison.OrdinalIgnoreCase)));
+        return id;
+    }
+
+    private string UniqueAlertProfileName(string? requested, string? currentProfileId = null)
+    {
+        var baseName = string.IsNullOrWhiteSpace(requested) ? "New profile" : requested.Trim();
+        var candidate = baseName;
+        var index = 2;
+        while (_config.AlertProfiles.Any(profile =>
+            !string.Equals(profile.Id, currentProfileId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(profile.Name, candidate, StringComparison.OrdinalIgnoreCase)))
+        {
+            candidate = $"{baseName} {index}";
+            index++;
+        }
+
+        return candidate;
+    }
+
+    private static AlertProfileConfig CopyAlertProfile(AlertProfileConfig source, string id, string name)
+    {
+        return new AlertProfileConfig
+        {
+            Id = id,
+            Name = name,
+            BlackThreshold = source.BlackThreshold,
+            BlackPixelThreshold = source.BlackPixelThreshold,
+            BlackPixelRatioThreshold = source.BlackPixelRatioThreshold,
+            MinBlackDurationSec = 0,
+            FreezeDifferenceThreshold = source.FreezeDifferenceThreshold,
+            MinFreezeDurationSec = source.MinFreezeDurationSec,
+            MinFreezeFrames = source.MinFreezeFrames,
+            SilenceThresholdDb = source.SilenceThresholdDb,
+            MinSilenceDurationSec = source.MinSilenceDurationSec,
+            ClippingThresholdDb = source.ClippingThresholdDb,
+            ClippingCountThreshold = source.ClippingCountThreshold,
+            InputTimeoutSec = source.InputTimeoutSec,
+            LowFpsThreshold = source.LowFpsThreshold,
+            MinLowFpsDurationSec = source.MinLowFpsDurationSec
+        };
     }
 
     private static string FormatProfileNumber(double value)
@@ -1315,7 +2320,26 @@ public partial class MainWindow : Window
         UpdateFooter($"Alert {alert.Id} marked as {status}.");
     }
 
-    private IEnumerable<StreamConfig> ActiveLayoutStreams()
+    private Dictionary<string, StreamConfig> StreamLookup()
+    {
+        var lookup = new Dictionary<string, StreamConfig>(StringComparer.OrdinalIgnoreCase);
+        foreach (var stream in _config.Streams)
+        {
+            if (!string.IsNullOrWhiteSpace(stream.Id) && !lookup.ContainsKey(stream.Id))
+            {
+                lookup[stream.Id] = stream;
+            }
+        }
+
+        return lookup;
+    }
+
+    private List<StreamConfig> ActiveLayoutStreams()
+    {
+        return ActiveLayoutStreams(StreamLookup());
+    }
+
+    private List<StreamConfig> ActiveLayoutStreams(IReadOnlyDictionary<string, StreamConfig> streamLookup)
     {
         var layout = _config.Layouts.FirstOrDefault(layout => layout.Id == _config.ActiveLayoutId)
             ?? _config.Layouts.FirstOrDefault();
@@ -1324,12 +2348,27 @@ public partial class MainWindow : Window
             return [];
         }
 
-        return layout.Tiles
-            .OrderBy(tile => tile.Index)
-            .Select(tile => _config.Streams.FirstOrDefault(stream => stream.Id == tile.StreamId))
-            .Where(stream => stream is not null)
-            .Cast<StreamConfig>()
-            .DistinctBy(stream => stream.Id);
+        var streams = new List<StreamConfig>(layout.Tiles.Count);
+        var seenStreamIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var tile in layout.Tiles)
+        {
+            if (string.IsNullOrWhiteSpace(tile.StreamId) ||
+                !streamLookup.TryGetValue(tile.StreamId, out var stream) ||
+                !seenStreamIds.Add(stream.Id))
+            {
+                continue;
+            }
+
+            streams.Add(stream);
+        }
+
+        return streams;
+    }
+
+    private bool IsStreamInActiveLayout(string streamId)
+    {
+        var layout = ActiveLayout();
+        return layout?.Tiles.Any(tile => string.Equals(tile.StreamId, streamId, StringComparison.OrdinalIgnoreCase)) == true;
     }
 
     private async System.Threading.Tasks.Task StartStreamPlaybackAsync(StreamConfig stream)
@@ -1343,11 +2382,7 @@ public partial class MainWindow : Window
 
         var (libVlc, player, audioMonitor) = PrepareStreamPlayback(stream);
         var media = new Media(libVlc, stream.InputUrl, FromType.FromLocation);
-        media.AddOption(":network-caching=300");
-        media.AddOption(":live-caching=300");
-        media.AddOption(":rtsp-tcp");
-        media.AddOption(":ipv4-timeout=3000000");
-        media.AddOption(":sout-mux-caching=300");
+        AddLowLatencyVlcMediaOptions(media);
         var streamId = stream.Id;
         var streamName = stream.Name;
 
@@ -1368,23 +2403,36 @@ public partial class MainWindow : Window
             return false;
         }
 
-        return string.Equals(stream.InputProtocol, "srt", StringComparison.OrdinalIgnoreCase) ||
+        return stream.AnalysisEnabled ||
+            stream.InputProtocol.StartsWith("srt", StringComparison.OrdinalIgnoreCase) ||
             stream.InputUrl.StartsWith("srt://", StringComparison.OrdinalIgnoreCase);
     }
 
     private void StartFfmpegStreamPlayback(StreamConfig stream)
     {
+        _playbackRestartAfter.Remove(stream.Id);
         StopStreamPlayback(stream.Id);
         ClearPlaybackAnalysis(stream.Id);
         var ffmpeg = FindFfmpeg() ?? throw new InvalidOperationException("ffmpeg was not found.");
         var profile = AlertProfileFor(stream);
-        var session = new FfmpegPlaybackSession(
+        FfmpegPlaybackSession? session = null;
+        session = new FfmpegPlaybackSession(
             ffmpeg,
             stream.InputUrl,
             stream.InputProtocol,
             Dispatcher,
             profile.BlackPixelThreshold,
-            profile.FreezeDifferenceThreshold);
+            profile.FreezeDifferenceThreshold,
+            profile.BlackThreshold,
+            profile.BlackPixelRatioThreshold,
+            () => QueueImmediateVideoAlertEvaluation(stream.Id),
+            () =>
+            {
+                if (session is not null)
+                {
+                    OnFirstFfmpegFramePresented(stream, session);
+                }
+            });
 
         _ffmpegPlaybackSessions[stream.Id] = session;
         if (stream.AnalysisEnabled)
@@ -1400,6 +2448,16 @@ public partial class MainWindow : Window
         UpdateTileChrome(stream);
         session.Start();
         AppendDesktopLog($"FFmpeg playback started for {stream.Id}: {MaskStreamUrl(stream.InputUrl)}");
+    }
+
+    private void OnFirstFfmpegFramePresented(StreamConfig stream, FfmpegPlaybackSession session)
+    {
+        var snapshot = session.CurrentPlaybackSnapshot();
+        _playbackSnapshots[stream.Id] = snapshot;
+        TrackPlaybackProgress(stream.Id, snapshot);
+        RefreshPlaybackSurface(stream);
+        UpdateTileChrome(stream);
+        UpdatePlaybackSummary();
     }
 
     private void StartLibVlcPlayback(string streamId, string streamName, VlcMediaPlayer player, AudioLevelMonitor? audioMonitor, Media media)
@@ -1470,6 +2528,7 @@ public partial class MainWindow : Window
 
     private (LibVLC LibVlc, VlcMediaPlayer Player, AudioLevelMonitor? AudioMonitor) PrepareStreamPlayback(StreamConfig stream)
     {
+        _playbackRestartAfter.Remove(stream.Id);
         StopStreamPlayback(stream.Id);
         ClearPlaybackAnalysis(stream.Id);
         var libVlc = EnsureLibVlc();
@@ -1513,6 +2572,8 @@ public partial class MainWindow : Window
 
     private void StopStreamPlayback(string streamId)
     {
+        _playbackRestartAfter.Remove(streamId);
+        _tileSurfaceRenderKeys.Remove(streamId);
         if (_ffmpegPlaybackSessions.Remove(streamId, out var ffmpegSession))
         {
             if (_videoMonitors.TryGetValue(streamId, out var monitor) && ReferenceEquals(monitor, ffmpegSession))
@@ -1558,7 +2619,14 @@ public partial class MainWindow : Window
 
     private void StopAllPlayback()
     {
-        foreach (var streamId in _players.Keys.Concat(_ffmpegPlaybackSessions.Keys).Distinct(StringComparer.OrdinalIgnoreCase).ToList())
+        _playbackRestartAfter.Clear();
+        var streamIds = new HashSet<string>(_players.Keys, StringComparer.OrdinalIgnoreCase);
+        foreach (var streamId in _ffmpegPlaybackSessions.Keys)
+        {
+            streamIds.Add(streamId);
+        }
+
+        foreach (var streamId in streamIds)
         {
             StopStreamPlayback(streamId);
         }
@@ -1566,6 +2634,11 @@ public partial class MainWindow : Window
 
     private void StartAudioMonitor(StreamConfig stream)
     {
+        if (_ffmpegPlaybackSessions.ContainsKey(stream.Id))
+        {
+            return;
+        }
+
         if (_audioMonitors.ContainsKey(stream.Id) || !CanPlayStream(stream))
         {
             return;
@@ -1600,83 +2673,42 @@ public partial class MainWindow : Window
 
     private void StartVideoMonitor(StreamConfig stream)
     {
+        if (TryUsePlaybackAsVideoMonitor(stream))
+        {
+            return;
+        }
+
+        if (QueueSharedAnalysisPlaybackRestart(stream))
+        {
+            return;
+        }
+
         if (_videoMonitors.ContainsKey(stream.Id) || !CanPlayStream(stream))
         {
             return;
         }
 
-        try
-        {
-            var profile = AlertProfileFor(stream);
-            var ffmpeg = FindFfmpeg();
-            IVideoAnalysisMonitor monitor = !string.IsNullOrWhiteSpace(ffmpeg)
-                ? new FfmpegVideoAnalysisMonitor(ffmpeg, stream.InputUrl, stream.InputProtocol, profile.BlackPixelThreshold, profile.FreezeDifferenceThreshold)
-                : new VideoLumaMonitor(EnsureLibVlc(), stream.InputUrl, profile.BlackPixelThreshold, profile.FreezeDifferenceThreshold);
-            monitor.Start();
-            _videoMonitors[stream.Id] = monitor;
-            AppendDesktopLog($"Video analysis monitor started for {stream.Id}: {monitor.Kind}");
-        }
-        catch (Exception ex)
-        {
-            AppendDesktopLog($"Video analysis monitor failed for {stream.Id}: {ex.Message}");
-            StopVideoMonitor(stream.Id);
-        }
+        AppendDesktopLog($"Video analysis monitor deferred for {stream.Id}: no shared playback analysis session is available, avoiding a second source connection.");
     }
 
     private void QueueVideoMonitorStart(StreamConfig stream)
     {
+        if (TryUsePlaybackAsVideoMonitor(stream))
+        {
+            return;
+        }
+
+        if (QueueSharedAnalysisPlaybackRestart(stream))
+        {
+            return;
+        }
+
         if (_videoMonitors.ContainsKey(stream.Id) || !CanPlayStream(stream))
         {
             return;
         }
 
-        var profile = AlertProfileFor(stream);
-        var ffmpeg = FindFfmpeg();
-        if (string.IsNullOrWhiteSpace(ffmpeg))
-        {
-            _ = Dispatcher.BeginInvoke(() => StartVideoMonitor(stream), DispatcherPriority.ContextIdle);
-            return;
-        }
-
-        var streamId = stream.Id;
-        var inputUrl = stream.InputUrl;
-        var inputProtocol = stream.InputProtocol;
-        var blackPixelThreshold = profile.BlackPixelThreshold;
-        var freezeDifferenceThreshold = profile.FreezeDifferenceThreshold;
-        _ = System.Threading.Tasks.Task.Run(() =>
-        {
-            IVideoAnalysisMonitor? monitor = null;
-            Exception? error = null;
-            try
-            {
-                monitor = new FfmpegVideoAnalysisMonitor(ffmpeg, inputUrl, inputProtocol, blackPixelThreshold, freezeDifferenceThreshold);
-                monitor.Start();
-            }
-            catch (Exception ex)
-            {
-                error = ex;
-                monitor?.Dispose();
-                monitor = null;
-            }
-
-            _ = Dispatcher.BeginInvoke(() =>
-            {
-                if (!_players.ContainsKey(streamId))
-                {
-                    monitor?.Dispose();
-                    return;
-                }
-
-                if (monitor is not null)
-                {
-                    _videoMonitors[streamId] = monitor;
-                    AppendDesktopLog($"Video analysis monitor started for {streamId}: {monitor.Kind}");
-                    return;
-                }
-
-                AppendDesktopLog($"Video analysis monitor failed for {streamId}: {error?.Message}");
-            }, DispatcherPriority.Background);
-        });
+        AppendDesktopLog($"Video analysis monitor deferred for {stream.Id}: no shared playback analysis session is available, avoiding a second source connection.");
     }
 
     private void StopVideoMonitor(string streamId)
@@ -1692,6 +2724,48 @@ public partial class MainWindow : Window
         }
 
         monitor.Dispose();
+    }
+
+    private bool TryUsePlaybackAsVideoMonitor(StreamConfig stream)
+    {
+        if (_videoMonitors.ContainsKey(stream.Id))
+        {
+            return true;
+        }
+
+        if (!_ffmpegPlaybackSessions.TryGetValue(stream.Id, out var session))
+        {
+            return false;
+        }
+
+        _videoMonitors[stream.Id] = session;
+        AppendDesktopLog($"Video analysis monitor reused playback session for {stream.Id}.");
+        return true;
+    }
+
+    private bool QueueSharedAnalysisPlaybackRestart(StreamConfig stream)
+    {
+        if (!stream.AnalysisEnabled ||
+            !_players.ContainsKey(stream.Id) ||
+            !ShouldUseFfmpegPlayback(stream))
+        {
+            return false;
+        }
+
+        AppendDesktopLog($"Restarting {stream.Id} with shared FFmpeg playback/analysis to avoid a second source connection.");
+        _ = Dispatcher.BeginInvoke(new Action(async () =>
+        {
+            try
+            {
+                await StartStreamPlaybackAsync(stream);
+            }
+            catch (Exception ex)
+            {
+                AppendDesktopLog($"Shared analysis playback restart failed for {stream.Id}: {ex}");
+                UpdateFooter($"Shared analysis restart failed for {stream.Name}: {ex.Message}");
+            }
+        }), DispatcherPriority.Background);
+        return true;
     }
 
     private void ApplyMuteState()
@@ -1721,26 +2795,144 @@ public partial class MainWindow : Window
         RefreshPlaybackMetadata();
     }
 
-    private void UpdatePlaybackSummary()
+    private void UpdatePlaybackSummary(IReadOnlyList<StreamConfig>? streams = null)
     {
-        var active = _players.Values.Count(player => IsActivePlaybackState(player.State)) +
-            _ffmpegPlaybackSessions.Values.Count(session => string.Equals(session.State, "playing", StringComparison.OrdinalIgnoreCase));
-        var errors = _playbackSnapshots.Values.Count(snapshot => string.Equals(snapshot.State, "error", StringComparison.OrdinalIgnoreCase));
-        PlaybackSummaryText.Text = $"{active} active / {_players.Count + _ffmpegPlaybackSessions.Count} loaded / {ActiveLayoutStreams().Count()} layout streams / {errors} errors";
+        var active = 0;
+        foreach (var player in _players.Values)
+        {
+            if (IsActivePlaybackState(player.State))
+            {
+                active++;
+            }
+        }
+
+        foreach (var session in _ffmpegPlaybackSessions.Values)
+        {
+            if (string.Equals(session.State, "playing", StringComparison.OrdinalIgnoreCase))
+            {
+                active++;
+            }
+        }
+
+        var errors = 0;
+        foreach (var snapshot in _playbackSnapshots.Values)
+        {
+            if (string.Equals(snapshot.State, "error", StringComparison.OrdinalIgnoreCase))
+            {
+                errors++;
+            }
+        }
+
+        var layoutStreams = streams ?? ActiveLayoutStreams();
+        var maxVideoAgeMs = -1.0;
+        foreach (var stream in layoutStreams)
+        {
+            var ageMs = TryGetVideoFreshnessMs(stream.Id);
+            if (ageMs > maxVideoAgeMs)
+            {
+                maxVideoAgeMs = ageMs;
+            }
+        }
+
+        var videoFreshness = maxVideoAgeMs >= 0
+            ? $" / video age max {maxVideoAgeMs:0}ms"
+            : "";
+        SetTextIfChanged(PlaybackSummaryText, $"{active} active / {_players.Count + _ffmpegPlaybackSessions.Count} loaded / {layoutStreams.Count} layout streams / {errors} errors{videoFreshness}");
     }
 
-    private void UpdateAlertActionButtons()
+    private double TryGetVideoFreshnessMs(string streamId)
     {
-        _alertHistoryWindow?.RefreshAlerts();
+        return PlaybackVideoFreshnessFor(streamId).AgeMs;
     }
 
-    private IEnumerable<AlertRecord> ActiveAlertsFor(string streamId)
+    private PlaybackVideoFreshness PlaybackVideoFreshnessFor(string streamId)
     {
-        return _config.AlertHistory
-            .Where(alert => string.Equals(alert.StreamId, streamId, StringComparison.OrdinalIgnoreCase))
-            .Where(alert => ActiveAlertStatuses.Contains(alert.Status))
-            .OrderByDescending(alert => SeverityRank(alert.Severity))
-            .ThenByDescending(alert => alert.StartedAt);
+        if (_ffmpegPlaybackSessions.TryGetValue(streamId, out var ffmpegSession) &&
+            ffmpegSession.LastFramePresentedAt > DateTimeOffset.MinValue)
+        {
+            var ageMs = Math.Max(0, (DateTimeOffset.UtcNow - ffmpegSession.LastFramePresentedAt).TotalMilliseconds);
+            return new PlaybackVideoFreshness(ageMs, ffmpegSession.LastRenderDelayMs);
+        }
+
+        return _lastVideoPresentedAt.TryGetValue(streamId, out var lastPresentedAt)
+            ? new PlaybackVideoFreshness(Math.Max(0, (DateTimeOffset.UtcNow - lastPresentedAt).TotalMilliseconds), -1)
+            : new PlaybackVideoFreshness(-1, -1);
+    }
+
+    private List<AlertRecord> ActiveAlertsFor(string streamId)
+    {
+        var alerts = new List<AlertRecord>();
+        foreach (var alert in _config.AlertHistory)
+        {
+            if (string.Equals(alert.StreamId, streamId, StringComparison.OrdinalIgnoreCase) &&
+                ActiveAlertStatuses.Contains(alert.Status))
+            {
+                alerts.Add(alert);
+            }
+        }
+
+        SortActiveAlerts(alerts);
+        return alerts;
+    }
+
+    private Dictionary<string, IReadOnlyList<AlertRecord>> ActiveAlertsByStream(IReadOnlyList<StreamConfig> streams)
+    {
+        var byStream = new Dictionary<string, IReadOnlyList<AlertRecord>>(streams.Count, StringComparer.OrdinalIgnoreCase);
+        var alertStreams = new Dictionary<string, List<AlertRecord>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var stream in streams)
+        {
+            if (!string.IsNullOrWhiteSpace(stream.Id) && !byStream.ContainsKey(stream.Id))
+            {
+                byStream[stream.Id] = Array.Empty<AlertRecord>();
+            }
+        }
+
+        if (byStream.Count == 0)
+        {
+            return new Dictionary<string, IReadOnlyList<AlertRecord>>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        foreach (var alert in _config.AlertHistory)
+        {
+            if (!byStream.ContainsKey(alert.StreamId) ||
+                !ActiveAlertStatuses.Contains(alert.Status))
+            {
+                continue;
+            }
+
+            if (!alertStreams.TryGetValue(alert.StreamId, out var alerts))
+            {
+                alerts = [];
+                alertStreams[alert.StreamId] = alerts;
+            }
+
+            alerts.Add(alert);
+        }
+
+        foreach (var (streamId, alerts) in alertStreams)
+        {
+            if (alerts.Count > 1)
+            {
+                SortActiveAlerts(alerts);
+            }
+
+            byStream[streamId] = alerts;
+        }
+
+        return byStream;
+    }
+
+    private IReadOnlyList<AlertRecord> ActiveAlertsFor(
+        string streamId,
+        IReadOnlyDictionary<string, IReadOnlyList<AlertRecord>>? activeAlertsByStream)
+    {
+        if (activeAlertsByStream is not null &&
+            activeAlertsByStream.TryGetValue(streamId, out var alerts))
+        {
+            return alerts;
+        }
+
+        return ActiveAlertsFor(streamId);
     }
 
     private AlertRecord? ActiveAlertFor(string streamId)
@@ -1750,21 +2942,14 @@ public partial class MainWindow : Window
 
     private string? PendingIssueFor(string streamId)
     {
-        var activeTypes = ActiveAlertsFor(streamId)
-            .Select(alert => alert.Type)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var type in new[]
+        return PendingIssueFor(streamId, ActiveAlertsFor(streamId));
+    }
+
+    private string? PendingIssueFor(string streamId, IReadOnlyList<AlertRecord> activeAlerts)
+    {
+        foreach (var type in PendingIssueTypes)
         {
-            "video.no_signal",
-            "video.black",
-            "video.freeze",
-            "video.low_fps",
-            "audio.channel_missing",
-            "audio.silence",
-            "audio.clipping"
-        })
-        {
-            if (activeTypes.Contains(type))
+            if (ContainsAlertType(activeAlerts, type))
             {
                 continue;
             }
@@ -1776,6 +2961,31 @@ public partial class MainWindow : Window
         }
 
         return null;
+    }
+
+    private static void SortActiveAlerts(List<AlertRecord> alerts)
+    {
+        alerts.Sort(CompareActiveAlerts);
+    }
+
+    private static int CompareActiveAlerts(AlertRecord left, AlertRecord right)
+    {
+        var severity = SeverityRank(right.Severity).CompareTo(SeverityRank(left.Severity));
+        return severity != 0 ? severity : right.StartedAt.CompareTo(left.StartedAt);
+    }
+
+    private static bool ContainsAlertType(IReadOnlyList<AlertRecord> alerts, string type)
+    {
+        for (var index = 0; index < alerts.Count; index++)
+        {
+            var alert = alerts[index];
+            if (string.Equals(alert.Type, type, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void EnsureStandardLayouts()
@@ -1814,6 +3024,52 @@ public partial class MainWindow : Window
                 Column = index % size,
                 StreamId = _config.Streams.ElementAtOrDefault(index)?.Id ?? ""
             });
+        }
+
+        NormalizeLayoutTiles(layout, size);
+    }
+
+    private void NormalizeLayoutTiles(LayoutConfig layout, int size)
+    {
+        var maxTiles = size * size;
+        foreach (var duplicate in layout.Tiles
+            .GroupBy(tile => tile.Index)
+            .SelectMany(group => group.Skip(1))
+            .Concat(layout.Tiles.Where(tile => tile.Index < 0 || tile.Index >= maxTiles))
+            .Distinct()
+            .ToList())
+        {
+            layout.Tiles.Remove(duplicate);
+        }
+
+        var orderedTiles = layout.Tiles.OrderBy(tile => tile.Index).ToList();
+        if (!layout.Tiles.SequenceEqual(orderedTiles))
+        {
+            layout.Tiles.Clear();
+            foreach (var tile in orderedTiles)
+            {
+                layout.Tiles.Add(tile);
+            }
+        }
+
+        var validStreamIds = _config.Streams.Select(stream => stream.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var usedStreamIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var tile in layout.Tiles)
+        {
+            tile.Row = tile.Index / size;
+            tile.Column = tile.Index % size;
+            tile.RowSpan = Math.Max(1, tile.RowSpan);
+            tile.ColSpan = Math.Max(1, tile.ColSpan);
+            if (string.IsNullOrWhiteSpace(tile.StreamId))
+            {
+                tile.StreamId = "";
+                continue;
+            }
+
+            if (!validStreamIds.Contains(tile.StreamId) || !usedStreamIds.Add(tile.StreamId))
+            {
+                tile.StreamId = "";
+            }
         }
     }
 
@@ -1905,7 +3161,17 @@ public partial class MainWindow : Window
         };
     }
 
-    private static string StatusColorFor(StreamConfig? stream, AlertRecord? alert, bool isLoaded, PlaybackSnapshot? snapshot)
+    private string StatusColorFor(StreamConfig? stream, AlertRecord? alert, bool isLoaded, PlaybackSnapshot? snapshot)
+    {
+        return StatusColorFor(stream, alert, isLoaded, snapshot, stream is null ? default : PlaybackVideoFreshnessFor(stream.Id));
+    }
+
+    private string StatusColorFor(
+        StreamConfig? stream,
+        AlertRecord? alert,
+        bool isLoaded,
+        PlaybackSnapshot? snapshot,
+        PlaybackVideoFreshness videoFreshness)
     {
         if (stream is null || !stream.Enabled)
         {
@@ -1921,10 +3187,29 @@ public partial class MainWindow : Window
         {
             return snapshot.State.ToLowerInvariant() switch
             {
-                "opening" or "buffering" or "starting" => "#f59e0b",
+                "opening" or "buffering" or "starting" or "rendering" => "#f59e0b",
                 "stopped" or "ended" or "error" => "#ef4444",
                 _ => "#6b7280"
             };
+        }
+
+        if (alert is null &&
+            snapshot is not null &&
+            string.Equals(snapshot.State, "playing", StringComparison.OrdinalIgnoreCase) &&
+            snapshot.DisplayedPictures <= 0 &&
+            (stream is null || !HasPresentedPlaybackVideo(stream.Id, snapshot)))
+        {
+            return "#f59e0b";
+        }
+
+        if (alert is null &&
+            stream is not null &&
+            snapshot is not null &&
+            string.Equals(snapshot.State, "playing", StringComparison.OrdinalIgnoreCase) &&
+            HasPresentedPlaybackVideo(stream.Id, snapshot) &&
+            !IsPlaybackVideoFreshForStatus(videoFreshness))
+        {
+            return "#f59e0b";
         }
 
         return alert?.Severity.ToLowerInvariant() switch
@@ -1944,7 +3229,17 @@ public partial class MainWindow : Window
         };
     }
 
-    private static string StatusTextFor(StreamConfig? stream, AlertRecord? alert, bool isLoaded, PlaybackSnapshot? snapshot)
+    private string StatusTextFor(StreamConfig? stream, AlertRecord? alert, bool isLoaded, PlaybackSnapshot? snapshot)
+    {
+        return StatusTextFor(stream, alert, isLoaded, snapshot, stream is null ? default : PlaybackVideoFreshnessFor(stream.Id));
+    }
+
+    private string StatusTextFor(
+        StreamConfig? stream,
+        AlertRecord? alert,
+        bool isLoaded,
+        PlaybackSnapshot? snapshot,
+        PlaybackVideoFreshness videoFreshness)
     {
         if (stream is null)
         {
@@ -1971,9 +3266,64 @@ public partial class MainWindow : Window
             return "starting / metadata pending";
         }
 
-        return string.Equals(snapshot.State, "playing", StringComparison.OrdinalIgnoreCase)
-            ? "OK"
-            : $"monitoring / {snapshot.State}";
+        if (!string.Equals(snapshot.State, "playing", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"monitoring / {snapshot.State}";
+        }
+
+        if (!HasPresentedPlaybackVideo(stream.Id, snapshot))
+        {
+            return "monitoring / rendering";
+        }
+
+        var freshnessText = VideoFreshnessText(videoFreshness);
+        return IsPlaybackVideoFreshForStatus(videoFreshness)
+            ? $"OK / {freshnessText}"
+            : $"monitoring / {freshnessText}";
+    }
+
+    private bool IsPlaybackVideoFreshForStatus(string streamId)
+    {
+        return IsPlaybackVideoFreshForStatus(PlaybackVideoFreshnessFor(streamId));
+    }
+
+    private static bool IsPlaybackVideoFreshForStatus(PlaybackVideoFreshness videoFreshness)
+    {
+        return videoFreshness.AgeMs < 0 || videoFreshness.AgeMs <= PlaybackVideoFreshnessWarning.TotalMilliseconds;
+    }
+
+    private bool HasPresentedPlaybackVideo(string streamId, PlaybackSnapshot snapshot)
+    {
+        if (_ffmpegPlaybackSessions.TryGetValue(streamId, out var ffmpegSession))
+        {
+            return ffmpegSession.HasPresentedFrame;
+        }
+
+        return HasPresentedVlcVideo(streamId, snapshot);
+    }
+
+    private bool HasPresentedVlcVideo(string streamId, PlaybackSnapshot snapshot)
+    {
+        return string.Equals(snapshot.State, "playing", StringComparison.OrdinalIgnoreCase) &&
+            (snapshot.DisplayedPictures > 0 || _lastVideoPresentedAt.ContainsKey(streamId));
+    }
+
+    private string VideoFreshnessText(string streamId)
+    {
+        return VideoFreshnessText(PlaybackVideoFreshnessFor(streamId));
+    }
+
+    private static string VideoFreshnessText(PlaybackVideoFreshness videoFreshness)
+    {
+        if (videoFreshness.AgeMs >= 0)
+        {
+            var renderLag = videoFreshness.RenderDelayMs >= 0
+                ? $" / render {videoFreshness.RenderDelayMs:0}ms"
+                : "";
+            return $"video {videoFreshness.AgeMs:0}ms{renderLag}";
+        }
+
+        return "video pending";
     }
 
     private static int SeverityRank(string severity)
@@ -2029,7 +3379,11 @@ public partial class MainWindow : Window
                     : $"waiting ({videoMonitor.State})";
             }
 
-            return $"playback: {snapshot.State} / fps: {fps} / time: {time}/{length} / audio: {audio} / tracks: {audioTracks} / level: {audioLevel} / luma: {luma}";
+            var videoOutput = _ffmpegPlaybackSessions.TryGetValue(stream.Id, out var ffmpegSession)
+                ? $" / video out: presented {ffmpegSession.BitmapFramesPresented}, coalesced {ffmpegSession.BitmapFramesCoalesced}, dropped {ffmpegSession.BitmapFramesDropped}"
+                : "";
+
+            return $"playback: {snapshot.State} / fps: {fps} / time: {time}/{length} / audio: {audio} / tracks: {audioTracks} / level: {audioLevel} / luma: {luma}{videoOutput}";
         }
 
         return IsPlaybackLoaded(stream.Id) ? "playback: starting" : "playback: stopped";
@@ -2038,14 +3392,37 @@ public partial class MainWindow : Window
     private void RefreshPlaybackMetadata()
     {
         _blinkPhase = !_blinkPhase;
-        foreach (var (streamId, player) in _players.ToList())
+        var now = DateTimeOffset.UtcNow;
+        var runSlowRefresh = now - _lastSlowPlaybackRefreshAt >= TimeSpan.FromSeconds(1);
+        if (runSlowRefresh)
+        {
+            _lastSlowPlaybackRefreshAt = now;
+        }
+
+        var streamLookup = StreamLookup();
+        var activeLayoutStreams = ActiveLayoutStreams(streamLookup);
+        var activeLayoutStreamLookup = new Dictionary<string, StreamConfig>(activeLayoutStreams.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var stream in activeLayoutStreams)
+        {
+            if (!string.IsNullOrWhiteSpace(stream.Id) && !activeLayoutStreamLookup.ContainsKey(stream.Id))
+            {
+                activeLayoutStreamLookup[stream.Id] = stream;
+            }
+        }
+
+        foreach (var (streamId, player) in _players)
         {
             try
             {
                 var snapshot = BuildSnapshot(player, null);
                 _playbackSnapshots[streamId] = snapshot;
                 TrackPlaybackProgress(streamId, snapshot);
-                if (_config.Streams.FirstOrDefault(stream => stream.Id == streamId) is { } stream)
+                if (runSlowRefresh)
+                {
+                    SchedulePlaybackRestartIfNeeded(streamId, snapshot);
+                }
+
+                if (activeLayoutStreamLookup.TryGetValue(streamId, out var stream))
                 {
                     RefreshPlaybackSurface(stream);
                 }
@@ -2056,14 +3433,19 @@ public partial class MainWindow : Window
             }
         }
 
-        foreach (var (streamId, session) in _ffmpegPlaybackSessions.ToList())
+        foreach (var (streamId, session) in _ffmpegPlaybackSessions)
         {
             try
             {
                 var snapshot = session.CurrentPlaybackSnapshot();
                 _playbackSnapshots[streamId] = snapshot;
                 TrackPlaybackProgress(streamId, snapshot);
-                if (_config.Streams.FirstOrDefault(stream => stream.Id == streamId) is { } stream)
+                if (runSlowRefresh)
+                {
+                    SchedulePlaybackRestartIfNeeded(streamId, snapshot);
+                }
+
+                if (activeLayoutStreamLookup.TryGetValue(streamId, out var stream))
                 {
                     RefreshPlaybackSurface(stream);
                 }
@@ -2074,27 +3456,77 @@ public partial class MainWindow : Window
             }
         }
 
-        var alertStateChanged = EvaluatePlaybackAlerts();
-        alertStateChanged |= RefreshSnoozedAlerts();
+        var alertStateChanged = false;
+        if (runSlowRefresh)
+        {
+            alertStateChanged = EvaluatePlaybackAlerts(activeLayoutStreams);
+            alertStateChanged |= RefreshSnoozedAlerts();
+        }
 
-        UpdatePlaybackSummary();
-        UpdateAllTileChrome();
+        UpdatePlaybackSummary(activeLayoutStreams);
+        UpdateAllTileChrome(activeLayoutStreams);
         if (alertStateChanged)
         {
             LocalConfigStore.Save(_config);
             RenderAlerts();
-            UpdateAllTileChrome();
+            UpdateAllTileChrome(activeLayoutStreams);
         }
 
-        _ = SyncWithServerAsync(force: false);
+        if (runSlowRefresh)
+        {
+            _ = SyncWithServerAsync(force: alertStateChanged);
+        }
     }
 
-    private bool EvaluatePlaybackAlerts()
+    private void QueueImmediateVideoAlertEvaluation(string streamId)
+    {
+        lock (_immediateVideoAlertEvaluationSync)
+        {
+            if (!_pendingImmediateVideoAlertEvaluations.Add(streamId))
+            {
+                return;
+            }
+        }
+
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            lock (_immediateVideoAlertEvaluationSync)
+            {
+                _pendingImmediateVideoAlertEvaluations.Remove(streamId);
+            }
+
+            var activeLayoutStreams = ActiveLayoutStreams();
+            var changed = EvaluatePlaybackAlerts(activeLayoutStreams, streamId);
+            UpdatePlaybackSummary(activeLayoutStreams);
+            UpdateSingleTileChrome(activeLayoutStreams, streamId);
+            if (!changed)
+            {
+                return;
+            }
+
+            LocalConfigStore.Save(_config);
+            RenderAlerts();
+            UpdateSingleTileChrome(activeLayoutStreams, streamId);
+            _ = SyncWithServerAsync(force: true);
+        }), DispatcherPriority.Normal);
+    }
+
+    private bool EvaluatePlaybackAlerts(IReadOnlyList<StreamConfig>? activeLayoutStreams = null, string? focusStreamId = null)
     {
         var changed = false;
-        var activeLayoutStreams = ActiveLayoutStreams().ToList();
-        foreach (var stream in activeLayoutStreams.Where(stream => stream.Enabled && stream.AnalysisEnabled && IsPlaybackLoaded(stream.Id)))
+        activeLayoutStreams ??= ActiveLayoutStreams();
+        foreach (var stream in activeLayoutStreams)
         {
+            if (focusStreamId is not null && !string.Equals(stream.Id, focusStreamId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (!stream.Enabled || !stream.AnalysisEnabled || !IsPlaybackLoaded(stream.Id))
+            {
+                continue;
+            }
+
             var profile = AlertProfileFor(stream);
             if (!_playbackSnapshots.TryGetValue(stream.Id, out var snapshot))
             {
@@ -2165,10 +3597,8 @@ public partial class MainWindow : Window
 
             if (!decodeError && !noSignal && IsBlackVideo(stream.Id, profile))
             {
-                if (IssueDurationSec(stream.Id, "video.black") >= profile.MinBlackDurationSec)
-                {
-                    changed |= RaiseAlert(stream, "video.black", "error", AlertMessageBlack);
-                }
+                MarkIssueSince(stream.Id, "video.black");
+                changed |= RaiseAlert(stream, "video.black", "error", AlertMessageBlack);
             }
             else if (!decodeError && !noSignal && analysisUnavailable)
             {
@@ -2246,8 +3676,18 @@ public partial class MainWindow : Window
             }
         }
 
-        foreach (var stream in activeLayoutStreams.Where(stream => !IsPlaybackLoaded(stream.Id)))
+        foreach (var stream in activeLayoutStreams)
         {
+            if (focusStreamId is not null && !string.Equals(stream.Id, focusStreamId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (IsPlaybackLoaded(stream.Id))
+            {
+                continue;
+            }
+
             changed |= ResolveActiveAlert(stream.Id, "video.no_signal");
             changed |= ResolveActiveAlert(stream.Id, "video.low_fps");
             changed |= ResolveActiveAlert(stream.Id, "video.decode_error");
@@ -2296,7 +3736,7 @@ public partial class MainWindow : Window
             UpdatedAt = now,
             SourceClientId = _config.ClientId
         });
-        PlayAlertSound(stream, severity);
+        UpdateContinuousAlertSound();
         return true;
     }
 
@@ -2338,7 +3778,7 @@ public partial class MainWindow : Window
             var stream = _config.Streams.FirstOrDefault(stream => stream.Id == alert.StreamId);
             if (stream is not null)
             {
-                PlayAlertSound(stream, alert.Severity);
+                UpdateContinuousAlertSound();
             }
 
             changed = true;
@@ -2347,33 +3787,146 @@ public partial class MainWindow : Window
         return changed;
     }
 
-    private void PlayAlertSound(StreamConfig stream, string severity)
+    private void UpdateContinuousAlertSound()
     {
-        if (!_config.AlertSoundEnabled || stream.AlertMuted)
-        {
-            return;
-        }
-
         try
         {
-            switch (severity.ToLowerInvariant())
+            var audibleAlert = AudibleOpenAlerts()
+                .OrderByDescending(alert => SeverityRank(alert.Severity))
+                .ThenByDescending(alert => alert.UpdatedAt == default ? alert.StartedAt : alert.UpdatedAt)
+                .FirstOrDefault();
+            if (audibleAlert is null)
             {
-                case "critical":
-                case "error":
-                    SystemSounds.Hand.Play();
-                    break;
-                case "warning":
-                    SystemSounds.Exclamation.Play();
-                    break;
-                default:
-                    SystemSounds.Asterisk.Play();
-                    break;
+                StopContinuousAlertSound();
+                return;
             }
+
+            var soundKey = AlertSoundKey(audibleAlert.Severity);
+            if (string.Equals(_activeAlertSoundKey, soundKey, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            StopContinuousAlertSound();
+            var wave = AlertSoundWave(soundKey);
+            _activeAlertSoundStream = new MemoryStream(wave, writable: false);
+            _activeAlertSoundPlayer = new SoundPlayer(_activeAlertSoundStream);
+            _activeAlertSoundPlayer.Load();
+            _activeAlertSoundPlayer.PlayLooping();
+            _activeAlertSoundKey = soundKey;
+        }
+        catch (Exception ex)
+        {
+            StopContinuousAlertSound();
+            AppendDesktopLog($"Alert sound failed: {ex.Message}");
+        }
+    }
+
+    private IEnumerable<AlertRecord> AudibleOpenAlerts()
+    {
+        if (!_config.AlertSoundEnabled)
+        {
+            return [];
+        }
+
+        return _config.AlertHistory
+            .Where(alert => string.Equals(alert.Status, "open", StringComparison.OrdinalIgnoreCase))
+            .Where(alert => _config.Streams.Any(stream =>
+                string.Equals(stream.Id, alert.StreamId, StringComparison.OrdinalIgnoreCase) &&
+                !stream.AlertMuted));
+    }
+
+    private void StopContinuousAlertSound()
+    {
+        try
+        {
+            _activeAlertSoundPlayer?.Stop();
+            _activeAlertSoundPlayer?.Dispose();
+            _activeAlertSoundStream?.Dispose();
         }
         catch
         {
             // Alert sounds are best-effort and must not interrupt monitoring.
         }
+        finally
+        {
+            _activeAlertSoundPlayer = null;
+            _activeAlertSoundStream = null;
+            _activeAlertSoundKey = null;
+        }
+    }
+
+    private static string AlertSoundKey(string severity)
+    {
+        return severity.ToLowerInvariant() switch
+        {
+            "critical" or "error" => "error",
+            "warning" => "warning",
+            _ => "info"
+        };
+    }
+
+    private byte[] AlertSoundWave(string soundKey)
+    {
+        if (_alertSoundWaves.TryGetValue(soundKey, out var cached))
+        {
+            return cached;
+        }
+
+        var pattern = soundKey switch
+        {
+            "error" => new[] { (Frequency: 880.0, DurationMs: 140), (Frequency: 0.0, DurationMs: 60), (Frequency: 1175.0, DurationMs: 140), (Frequency: 0.0, DurationMs: 60), (Frequency: 880.0, DurationMs: 180), (Frequency: 0.0, DurationMs: 360) },
+            "warning" => new[] { (Frequency: 660.0, DurationMs: 170), (Frequency: 0.0, DurationMs: 90), (Frequency: 660.0, DurationMs: 170), (Frequency: 0.0, DurationMs: 420) },
+            _ => new[] { (Frequency: 523.25, DurationMs: 180), (Frequency: 0.0, DurationMs: 620) }
+        };
+        cached = BuildAlertWave(pattern);
+        _alertSoundWaves[soundKey] = cached;
+        return cached;
+    }
+
+    private static byte[] BuildAlertWave(IReadOnlyList<(double Frequency, int DurationMs)> pattern)
+    {
+        const int sampleRate = 44100;
+        const short bitsPerSample = 16;
+        const short channels = 1;
+        const double amplitude = 0.28;
+        var samples = new List<short>();
+        foreach (var (frequency, durationMs) in pattern)
+        {
+            var count = Math.Max(1, sampleRate * durationMs / 1000);
+            for (var i = 0; i < count; i++)
+            {
+                var envelope = Math.Min(1.0, Math.Min(i / 220.0, (count - i) / 220.0));
+                var value = frequency <= 0
+                    ? 0
+                    : Math.Sin(2 * Math.PI * frequency * i / sampleRate) * amplitude * envelope;
+                samples.Add((short)Math.Clamp(value * short.MaxValue, short.MinValue, short.MaxValue));
+            }
+        }
+
+        var dataSize = samples.Count * sizeof(short);
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream, Encoding.ASCII, leaveOpen: true);
+        writer.Write(Encoding.ASCII.GetBytes("RIFF"));
+        writer.Write(36 + dataSize);
+        writer.Write(Encoding.ASCII.GetBytes("WAVE"));
+        writer.Write(Encoding.ASCII.GetBytes("fmt "));
+        writer.Write(16);
+        writer.Write((short)1);
+        writer.Write(channels);
+        writer.Write(sampleRate);
+        writer.Write(sampleRate * channels * bitsPerSample / 8);
+        writer.Write((short)(channels * bitsPerSample / 8));
+        writer.Write(bitsPerSample);
+        writer.Write(Encoding.ASCII.GetBytes("data"));
+        writer.Write(dataSize);
+        foreach (var sample in samples)
+        {
+            writer.Write(sample);
+        }
+
+        writer.Flush();
+        return stream.ToArray();
     }
 
     private async System.Threading.Tasks.Task SyncWithServerAsync(bool force)
@@ -2448,13 +4001,13 @@ public partial class MainWindow : Window
             }
 
             _lastServerSyncAt = DateTimeOffset.UtcNow;
-            ServerSyncStatusText.Text = $"server sync: ok / config: {streams.Count} streams, {layouts.Count} layouts, {alertProfiles.Count} profiles / alerts: {serverAlerts.Count} pulled, {uploaded} uploaded / {DateTimeOffset.Now:HH:mm:ss}";
-            ServerClientSummaryText.Text = ServerClientSummary(clients);
+            SetTextIfChanged(ServerSyncStatusText, $"server sync: ok / config: {streams.Count} streams, {layouts.Count} layouts, {alertProfiles.Count} profiles / alerts: {serverAlerts.Count} pulled, {uploaded} uploaded / {DateTimeOffset.Now:HH:mm:ss}");
+            SetTextIfChanged(ServerClientSummaryText, ServerClientSummary(clients));
         }
         catch (Exception ex)
         {
-            ServerSyncStatusText.Text = $"server sync: failed / {ex.Message}";
-            ServerClientSummaryText.Text = "server clients: unavailable";
+            SetTextIfChanged(ServerSyncStatusText, $"server sync: failed / {ex.Message}");
+            SetTextIfChanged(ServerClientSummaryText, "server clients: unavailable");
         }
         finally
         {
@@ -2572,7 +4125,11 @@ public partial class MainWindow : Window
             changed = true;
         }
 
-        RefreshConfigBindings(selectedStreamId);
+        if (changed)
+        {
+            RefreshConfigBindings(selectedStreamId);
+        }
+
         return changed;
     }
 
@@ -2718,7 +4275,7 @@ public partial class MainWindow : Window
             BlackThreshold = profile.BlackThreshold > 0 ? profile.BlackThreshold : defaults.BlackThreshold,
             BlackPixelThreshold = profile.BlackPixelThreshold > 0 ? profile.BlackPixelThreshold : defaults.BlackPixelThreshold,
             BlackPixelRatioThreshold = profile.BlackPixelRatioThreshold > 0 ? profile.BlackPixelRatioThreshold : defaults.BlackPixelRatioThreshold,
-            MinBlackDurationSec = profile.MinBlackDurationSec > 0 ? profile.MinBlackDurationSec : defaults.MinBlackDurationSec,
+            MinBlackDurationSec = 0,
             FreezeDifferenceThreshold = profile.FreezeDifferenceThreshold > 0 ? profile.FreezeDifferenceThreshold : defaults.FreezeDifferenceThreshold,
             MinFreezeDurationSec = profile.MinFreezeDurationSec > 0 ? profile.MinFreezeDurationSec : defaults.MinFreezeDurationSec,
             MinFreezeFrames = profile.MinFreezeFrames > 0 ? profile.MinFreezeFrames : defaults.MinFreezeFrames,
@@ -2846,6 +4403,14 @@ public partial class MainWindow : Window
 
     private void TrackPlaybackProgress(string streamId, PlaybackSnapshot snapshot)
     {
+        if (snapshot.DisplayedPictures > 0 &&
+            (!_lastDisplayedPictures.TryGetValue(streamId, out var lastDisplayedPictures) ||
+                snapshot.DisplayedPictures > lastDisplayedPictures))
+        {
+            _lastDisplayedPictures[streamId] = snapshot.DisplayedPictures;
+            _lastVideoPresentedAt[streamId] = snapshot.UpdatedAt;
+        }
+
         if (!IsMonitoringPlaybackState(snapshot.State))
         {
             return;
@@ -2915,6 +4480,82 @@ public partial class MainWindow : Window
         return _players.Count > 0 || _ffmpegPlaybackSessions.Count > 0;
     }
 
+    private void SchedulePlaybackRestartIfNeeded(string streamId, PlaybackSnapshot snapshot)
+    {
+        if (!IsRecoverablePlaybackState(snapshot.State))
+        {
+            _playbackRestartAfter.Remove(streamId);
+            return;
+        }
+
+        if (_playbackStartInFlight)
+        {
+            return;
+        }
+
+        var stream = _config.Streams.FirstOrDefault(candidate => string.Equals(candidate.Id, streamId, StringComparison.OrdinalIgnoreCase));
+        if (stream is null ||
+            !stream.Enabled ||
+            !CanPlayStream(stream) ||
+            !IsStreamInActiveLayout(streamId))
+        {
+            _playbackRestartAfter.Remove(streamId);
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        if (!_playbackRestartAfter.TryGetValue(streamId, out var restartAfter))
+        {
+            var profile = AlertProfileFor(stream);
+            _playbackRestartAfter[streamId] = now.AddSeconds(Math.Max(2, profile.InputTimeoutSec));
+            return;
+        }
+
+        if (now < restartAfter)
+        {
+            return;
+        }
+
+        _playbackRestartAfter[streamId] = now.AddSeconds(Math.Max(5, AlertProfileFor(stream).InputTimeoutSec));
+        var restartReason = snapshot.State;
+        _ = Dispatcher.BeginInvoke(new Action(async () =>
+        {
+            await RestartSingleStreamPlaybackAsync(streamId, restartReason);
+        }), DispatcherPriority.Background);
+    }
+
+    private async System.Threading.Tasks.Task RestartSingleStreamPlaybackAsync(string streamId, string reason)
+    {
+        if (_playbackStartInFlight)
+        {
+            return;
+        }
+
+        var stream = _config.Streams.FirstOrDefault(candidate => string.Equals(candidate.Id, streamId, StringComparison.OrdinalIgnoreCase));
+        if (stream is null ||
+            !stream.Enabled ||
+            !CanPlayStream(stream) ||
+            !IsStreamInActiveLayout(streamId))
+        {
+            _playbackRestartAfter.Remove(streamId);
+            return;
+        }
+
+        try
+        {
+            AppendDesktopLog($"Restarting receiver for {stream.Id} after playback state '{reason}'.");
+            await StartStreamPlaybackAsync(stream);
+            _playbackRestartAfter.Remove(streamId);
+            UpdateFooter($"Receiver restarted for {stream.Name}.");
+        }
+        catch (Exception ex)
+        {
+            _playbackRestartAfter[streamId] = DateTimeOffset.UtcNow.AddSeconds(Math.Max(5, AlertProfileFor(stream).InputTimeoutSec));
+            AppendDesktopLog($"Receiver restart failed for {stream.Id}: {ex}");
+            UpdateFooter($"Receiver restart failed for {stream.Name}: {ex.Message}");
+        }
+    }
+
     private bool IsAnalysisEnded(string streamId)
     {
         if (!_videoMonitors.TryGetValue(streamId, out var monitor))
@@ -2969,6 +4610,8 @@ public partial class MainWindow : Window
         _lastPlaybackProgressMarker.Remove(streamId);
         _lastPlaybackProgressAt.Remove(streamId);
         _lastVideoAnalysisLogAt.Remove(streamId);
+        _lastDisplayedPictures.Remove(streamId);
+        _lastVideoPresentedAt.Remove(streamId);
         ClearIssueSince(streamId, "video.no_signal");
         ClearIssueSince(streamId, "video.opening");
         ClearIssueSince(streamId, "video.analysis_restart");
@@ -2993,8 +4636,15 @@ public partial class MainWindow : Window
             stats = null;
         }
 
+        var displayedPictures = stats?.DisplayedPictures ?? 0;
+        var state = overrideState ?? player.State.ToString().ToLowerInvariant();
+        if (string.Equals(state, "playing", StringComparison.OrdinalIgnoreCase) && displayedPictures <= 0)
+        {
+            state = "rendering";
+        }
+
         return new PlaybackSnapshot(
-            overrideState ?? player.State.ToString().ToLowerInvariant(),
+            state,
             player.Fps,
             player.Time,
             player.Length,
@@ -3004,7 +4654,7 @@ public partial class MainWindow : Window
             stats?.ReadBytes ?? 0,
             stats?.DemuxReadBytes ?? 0,
             stats?.DecodedVideo ?? 0,
-            stats?.DisplayedPictures ?? 0,
+            displayedPictures,
             stats?.LostPictures ?? 0,
             stats?.DecodedAudio ?? 0,
             stats?.PlayedAudioBuffers ?? 0,
@@ -3018,18 +4668,20 @@ public partial class MainWindow : Window
         return new PlaybackSnapshot(state, 0, -1, -1, true, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, DateTimeOffset.UtcNow);
     }
 
+    private static AudioLevelSnapshot EmptyAudioLevelSnapshot()
+    {
+        return new AudioLevelSnapshot(-120, -120, 0, DateTimeOffset.MinValue, []);
+    }
+
     private static long PlaybackProgressMarker(PlaybackSnapshot snapshot)
     {
-        return new[]
-        {
-            Math.Max(0, snapshot.TimeMs),
-            Math.Max(0, snapshot.ReadBytes),
-            Math.Max(0, snapshot.DemuxReadBytes),
-            Math.Max(0, snapshot.DecodedVideo),
-            Math.Max(0, snapshot.DisplayedPictures),
-            Math.Max(0, snapshot.DecodedAudio),
-            Math.Max(0, snapshot.PlayedAudioBuffers)
-        }.Max();
+        var marker = Math.Max(0, snapshot.TimeMs);
+        marker = Math.Max(marker, Math.Max(0, snapshot.ReadBytes));
+        marker = Math.Max(marker, Math.Max(0, snapshot.DemuxReadBytes));
+        marker = Math.Max(marker, Math.Max(0, snapshot.DecodedVideo));
+        marker = Math.Max(marker, Math.Max(0, snapshot.DisplayedPictures));
+        marker = Math.Max(marker, Math.Max(0, snapshot.DecodedAudio));
+        return Math.Max(marker, Math.Max(0, snapshot.PlayedAudioBuffers));
     }
 
     private static bool IsActivePlaybackState(VLCState state)
@@ -3055,7 +4707,16 @@ public partial class MainWindow : Window
     {
         return state.ToLowerInvariant() switch
         {
-            "starting" or "opening" or "buffering" or "playing" => true,
+            "starting" or "opening" or "buffering" or "rendering" or "playing" => true,
+            _ => false
+        };
+    }
+
+    private static bool IsRecoverablePlaybackState(string state)
+    {
+        return state.ToLowerInvariant() switch
+        {
+            "waiting" or "stopped" or "ended" or "error" => true,
             _ => false
         };
     }
@@ -3085,6 +4746,12 @@ public partial class MainWindow : Window
 
         monitor.DarkPixelThreshold = Math.Clamp(profile.BlackPixelThreshold, 0.0, 1.0);
         monitor.StabilityDifferenceThreshold = Math.Clamp(profile.FreezeDifferenceThreshold, 0.0, 1.0);
+        if (monitor is IImmediateBlackFrameMonitor immediateBlackMonitor)
+        {
+            immediateBlackMonitor.BlackLumaThreshold = Math.Clamp(profile.BlackThreshold, 0.0, 1.0);
+            immediateBlackMonitor.BlackPixelRatioThreshold = Math.Clamp(profile.BlackPixelRatioThreshold, 0.0, 1.0);
+        }
+
         if (monitor.TryGetSnapshot(out snapshot) &&
             DateTimeOffset.UtcNow - snapshot.UpdatedAt <= TimeSpan.FromSeconds(Math.Max(2, profile.InputTimeoutSec)))
         {
@@ -3144,7 +4811,10 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        CompositionTarget.Rendering -= AudioMeterCompositionTarget_Rendering;
         _playbackTimer.Stop();
+        _audioMeterTimer.Stop();
+        StopContinuousAlertSound();
         StopAllPlayback();
         _httpClient.Dispose();
         _libVlc?.Dispose();
@@ -3165,12 +4835,48 @@ public partial class MainWindow : Window
 
     private static Brush BrushFromHex(string hex)
     {
-        return (Brush)new BrushConverter().ConvertFromString(hex)!;
+        lock (ColorResourceSync)
+        {
+            if (BrushCache.TryGetValue(hex, out var cached))
+            {
+                return cached;
+            }
+
+            var brush = (Brush)new BrushConverter().ConvertFromString(hex)!;
+            if (brush.CanFreeze)
+            {
+                brush.Freeze();
+            }
+
+            BrushCache[hex] = brush;
+            return brush;
+        }
     }
 
     private static Color ColorFromHex(string hex)
     {
-        return (Color)ColorConverter.ConvertFromString(hex)!;
+        lock (ColorResourceSync)
+        {
+            if (ColorCache.TryGetValue(hex, out var cached))
+            {
+                return cached;
+            }
+
+            var color = (Color)ColorConverter.ConvertFromString(hex)!;
+            ColorCache[hex] = color;
+            return color;
+        }
+    }
+
+    internal static bool SetTextIfChanged(TextBlock textBlock, string text)
+    {
+        if (string.Equals(textBlock.Text, text, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        textBlock.Text = text;
+        return true;
     }
 
     internal static string MaskStreamUrl(string raw)
@@ -3232,7 +4938,50 @@ internal sealed record AudioLevelSnapshot(
     double LevelDb,
     double PeakDb,
     int ClippingSamples,
-    DateTimeOffset LastSamplesAt);
+    DateTimeOffset LastSamplesAt,
+    AudioChannelLevel[] Channels);
+
+internal sealed record AudioChannelLevel(
+    int Channel,
+    double LevelDb,
+    double PeakDb,
+    int ClippingSamples);
+
+internal sealed class AudioMeterView
+{
+    public AudioMeterView(
+        int channel,
+        Border track,
+        Border fill,
+        RectangleGeometry fillClip,
+        Border peakMarker,
+        TranslateTransform peakOffset)
+    {
+        Channel = channel;
+        Track = track;
+        Fill = fill;
+        FillClip = fillClip;
+        PeakMarker = peakMarker;
+        PeakOffset = peakOffset;
+    }
+
+    public int Channel { get; }
+    public Border Track { get; }
+    public Border Fill { get; }
+    public RectangleGeometry FillClip { get; }
+    public Border PeakMarker { get; }
+    public TranslateTransform PeakOffset { get; }
+    public double TargetLevelRatio { get; set; }
+    public double TargetPeakRatio { get; set; }
+    public double DisplayedLevelRatio { get; set; }
+    public double DisplayedPeakRatio { get; set; }
+    public bool Clipping { get; set; }
+    public bool DisplayedClipping { get; set; }
+    public double LastLevelDb { get; set; }
+    public double LastPeakDb { get; set; }
+    public DateTimeOffset LastTooltipAt { get; set; } = DateTimeOffset.MinValue;
+    public DateTimeOffset LastAnimationAt { get; set; } = DateTimeOffset.MinValue;
+}
 
 internal sealed record VideoLumaSnapshot(
     double Luma,
@@ -3267,23 +5016,69 @@ internal interface IVideoAnalysisMonitor : IDisposable
     bool TryGetSnapshot(out VideoLumaSnapshot snapshot);
 }
 
-internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
+internal interface IImmediateBlackFrameMonitor
 {
-    private const int Width = 1280;
-    private const int Height = 720;
+    double BlackLumaThreshold { get; set; }
+    double BlackPixelRatioThreshold { get; set; }
+}
+
+internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateBlackFrameMonitor
+{
+    private const int Width = 960;
+    private const int Height = 540;
     private const int BytesPerPixel = 3;
     private const int Stride = Width * BytesPerPixel;
     private const int FrameBytes = Stride * Height;
     private const double TargetFps = 30;
     private const double SilenceFloorDb = -120;
+    private const int AnalysisSampleStrideX = 8;
+    private const int AnalysisSampleStrideY = 8;
+    private const int AnalysisSampleColumns = (Width + AnalysisSampleStrideX - 1) / AnalysisSampleStrideX;
+    private const int AnalysisSampleRows = (Height + AnalysisSampleStrideY - 1) / AnalysisSampleStrideY;
+    private const int AnalysisSampleCount = AnalysisSampleColumns * AnalysisSampleRows;
+    private const int MaxAudioStatsChannels = 16;
+    private static readonly RegexOptions AudioStatsRegexOptions =
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled;
+    private static readonly TimeSpan AudioStatsRegexTimeout = TimeSpan.FromMilliseconds(100);
+    private static readonly Regex ChannelRmsMetadataRegex = new(
+        @"lavfi\.astats\.(\d+)\.RMS_level=(-?inf|[-+]?\d+(?:\.\d+)?)",
+        AudioStatsRegexOptions,
+        AudioStatsRegexTimeout);
+    private static readonly Regex ChannelPeakMetadataRegex = new(
+        @"lavfi\.astats\.(\d+)\.Peak_level=(-?inf|[-+]?\d+(?:\.\d+)?)",
+        AudioStatsRegexOptions,
+        AudioStatsRegexTimeout);
+    private static readonly Regex OverallRmsMetadataRegex = new(
+        @"lavfi\.astats\.Overall\.RMS_level=(-?inf|[-+]?\d+(?:\.\d+)?)",
+        AudioStatsRegexOptions,
+        AudioStatsRegexTimeout);
+    private static readonly Regex OverallPeakMetadataRegex = new(
+        @"lavfi\.astats\.Overall\.Peak_level=(-?inf|[-+]?\d+(?:\.\d+)?)",
+        AudioStatsRegexOptions,
+        AudioStatsRegexTimeout);
+    private static readonly Regex LegacyRmsLogRegex = new(
+        @"RMS level dB:\s*(-?inf|[-+]?\d+(?:\.\d+)?)",
+        AudioStatsRegexOptions,
+        AudioStatsRegexTimeout);
+    private static readonly Regex LegacyPeakLogRegex = new(
+        @"Peak level dB:\s*(-?inf|[-+]?\d+(?:\.\d+)?)",
+        AudioStatsRegexOptions,
+        AudioStatsRegexTimeout);
 
     private readonly string _ffmpegPath;
     private readonly string _inputUrl;
     private readonly string _protocol;
     private readonly List<string> _inputCandidates;
     private readonly Dispatcher _dispatcher;
+    private readonly Action _blackFrameDetected;
+    private readonly Action _firstFramePresented;
     private readonly object _sync = new();
-    private readonly byte[] _previousBuffer = new byte[FrameBytes];
+    private readonly object _bitmapFrameSync = new();
+    private readonly double[] _previousSampleLuma = new double[AnalysisSampleCount];
+    private byte[] _bitmapWriteFrameBuffer = new byte[FrameBytes];
+    private byte[] _bitmapPendingFrameBuffer = new byte[FrameBytes];
+    private long _bitmapWriteFrameReadTicks;
+    private long _bitmapPendingFrameReadTicks;
     private Process? _process;
     private CancellationTokenSource? _cts;
     private VideoLumaSnapshot? _snapshot;
@@ -3295,26 +5090,80 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
     private string _state = "stopped";
     private string _lastError = "";
     private int _candidateIndex;
+    private bool _bitmapWriteScheduled;
+    private bool _bitmapPendingFrameReady;
+    private long _bitmapFramesQueued;
+    private long _bitmapFramesDropped;
+    private long _bitmapFramesCoalesced;
+    private long _bitmapFramesPresented;
+    private long _lastFrameReadTicks;
+    private long _lastFramePresentedTicks;
+    private long _lastPresentedFrameReadTicks;
     private bool _disposed;
     private DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
     private double _lastParsedRmsDb = SilenceFloorDb;
     private double _lastParsedPeakDb = SilenceFloorDb;
+    private int _parsedAudioChannelMask;
+    private int _parsedAudioChannelRmsMask;
+    private int _parsedAudioChannelPeakMask;
+    private readonly double[] _lastParsedChannelRmsDb = new double[MaxAudioStatsChannels];
+    private readonly double[] _lastParsedChannelPeakDb = new double[MaxAudioStatsChannels];
 
-    public FfmpegPlaybackSession(string ffmpegPath, string inputUrl, string protocol, Dispatcher dispatcher, double darkPixelThreshold, double stabilityDifferenceThreshold)
+    public FfmpegPlaybackSession(
+        string ffmpegPath,
+        string inputUrl,
+        string protocol,
+        Dispatcher dispatcher,
+        double darkPixelThreshold,
+        double stabilityDifferenceThreshold,
+        double blackLumaThreshold,
+        double blackPixelRatioThreshold,
+        Action blackFrameDetected,
+        Action? firstFramePresented = null)
     {
         _ffmpegPath = ffmpegPath;
         _inputUrl = inputUrl;
         _protocol = protocol;
         _inputCandidates = BuildInputCandidates(inputUrl, protocol);
         _dispatcher = dispatcher;
+        _blackFrameDetected = blackFrameDetected;
+        _firstFramePresented = firstFramePresented ?? (() => { });
         DarkPixelThreshold = Math.Clamp(darkPixelThreshold, 0.0, 1.0);
         StabilityDifferenceThreshold = Math.Clamp(stabilityDifferenceThreshold, 0.0, 1.0);
+        BlackLumaThreshold = Math.Clamp(blackLumaThreshold, 0.0, 1.0);
+        BlackPixelRatioThreshold = Math.Clamp(blackPixelRatioThreshold, 0.0, 1.0);
         Bitmap = new WriteableBitmap(Width, Height, 96, 96, PixelFormats.Bgr24, null);
     }
 
     public WriteableBitmap Bitmap { get; }
 
     public bool HasFrame => _framesRead > 0;
+
+    public bool HasPresentedFrame => Interlocked.Read(ref _bitmapFramesPresented) > 0;
+
+    public long BitmapFramesQueued => Interlocked.Read(ref _bitmapFramesQueued);
+
+    public long BitmapFramesDropped => Interlocked.Read(ref _bitmapFramesDropped);
+
+    public long BitmapFramesCoalesced => Interlocked.Read(ref _bitmapFramesCoalesced);
+
+    public long BitmapFramesPresented => Interlocked.Read(ref _bitmapFramesPresented);
+
+    public DateTimeOffset LastFrameReadAt => UtcTicksToDateTimeOffset(Interlocked.Read(ref _lastFrameReadTicks));
+
+    public DateTimeOffset LastFramePresentedAt => UtcTicksToDateTimeOffset(Interlocked.Read(ref _lastFramePresentedTicks));
+
+    public double LastRenderDelayMs
+    {
+        get
+        {
+            var readTicks = Interlocked.Read(ref _lastPresentedFrameReadTicks);
+            var presentedTicks = Interlocked.Read(ref _lastFramePresentedTicks);
+            return readTicks > 0 && presentedTicks >= readTicks
+                ? TimeSpan.FromTicks(presentedTicks - readTicks).TotalMilliseconds
+                : -1;
+        }
+    }
 
     public string Kind => "ffmpeg-playback";
 
@@ -3325,6 +5174,10 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
     public double DarkPixelThreshold { get; set; }
 
     public double StabilityDifferenceThreshold { get; set; }
+
+    public double BlackLumaThreshold { get; set; }
+
+    public double BlackPixelRatioThreshold { get; set; }
 
     public void Start()
     {
@@ -3373,16 +5226,33 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
 
     private static List<string> BuildInputCandidates(string inputUrl, string protocol)
     {
-        var candidates = new List<string> { inputUrl };
-        if ((string.Equals(protocol, "srt", StringComparison.OrdinalIgnoreCase) ||
-                inputUrl.StartsWith("srt://", StringComparison.OrdinalIgnoreCase)) &&
-            !inputUrl.Contains("mode=", StringComparison.OrdinalIgnoreCase))
+        if (!inputUrl.StartsWith("srt://", StringComparison.OrdinalIgnoreCase) ||
+            inputUrl.Contains("mode=", StringComparison.OrdinalIgnoreCase))
         {
-            candidates.Add(inputUrl.Contains('?', StringComparison.Ordinal) ? $"{inputUrl}&mode=listener" : $"{inputUrl}?mode=listener");
-            candidates.Add(inputUrl.Contains('?', StringComparison.Ordinal) ? $"{inputUrl}&mode=caller" : $"{inputUrl}?mode=caller");
+            return [inputUrl];
         }
 
-        return candidates.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var explicitMode = protocol.ToLowerInvariant() switch
+        {
+            "srt-listener" => "listener",
+            "srt-caller" => "caller",
+            "srt-rendezvous" => "rendezvous",
+            _ => ""
+        };
+        if (string.IsNullOrWhiteSpace(explicitMode))
+        {
+            return [inputUrl];
+        }
+
+        var separator = inputUrl.Contains('?', StringComparison.Ordinal) ? "&" : "?";
+        return [$"{inputUrl}{separator}mode={explicitMode}"];
+    }
+
+    private static DateTimeOffset UtcTicksToDateTimeOffset(long ticks)
+    {
+        return ticks > 0
+            ? new DateTimeOffset(ticks, TimeSpan.Zero)
+            : DateTimeOffset.MinValue;
     }
 
     public PlaybackSnapshot CurrentPlaybackSnapshot()
@@ -3390,6 +5260,12 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
         lock (_sync)
         {
             var state = _state;
+            var framesPresented = Interlocked.Read(ref _bitmapFramesPresented);
+            if (string.Equals(state, "playing", StringComparison.OrdinalIgnoreCase) && framesPresented == 0)
+            {
+                state = "rendering";
+            }
+
             return new PlaybackSnapshot(
                 state,
                 string.Equals(state, "playing", StringComparison.OrdinalIgnoreCase) ? (float)TargetFps : 0,
@@ -3401,7 +5277,7 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
                 _bytesRead,
                 _bytesRead,
                 (int)Math.Min(int.MaxValue, _framesRead),
-                (int)Math.Min(int.MaxValue, _framesRead),
+                (int)Math.Min(int.MaxValue, framesPresented),
                 0,
                 0,
                 0,
@@ -3432,7 +5308,7 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
         {
             if (_audioSnapshot is null)
             {
-                snapshot = new AudioLevelSnapshot(SilenceFloorDb, SilenceFloorDb, 0, DateTimeOffset.MinValue);
+                snapshot = new AudioLevelSnapshot(SilenceFloorDb, SilenceFloorDb, 0, DateTimeOffset.MinValue, []);
                 return false;
             }
 
@@ -3457,6 +5333,10 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
         arguments.Add("error");
         arguments.Add("-fflags");
         arguments.Add("nobuffer");
+        arguments.Add("-probesize");
+        arguments.Add("32768");
+        arguments.Add("-analyzeduration");
+        arguments.Add("0");
         arguments.Add("-flags");
         arguments.Add("low_delay");
         arguments.Add("-rw_timeout");
@@ -3501,7 +5381,29 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
 
     private bool TryParseAudioStatsLine(string line)
     {
-        var rmsMetadata = Regex.Match(line, @"lavfi\.astats\.Overall\.RMS_level=(-?inf|[-+]?\d+(?:\.\d+)?)", RegexOptions.IgnoreCase);
+        var channelRmsMetadata = ChannelRmsMetadataRegex.Match(line);
+        if (channelRmsMetadata.Success)
+        {
+            var channel = Math.Clamp(int.Parse(channelRmsMetadata.Groups[1].Value, CultureInfo.InvariantCulture), 1, MaxAudioStatsChannels);
+            var channelBit = RememberParsedAudioChannel(channel);
+            _parsedAudioChannelRmsMask |= channelBit;
+            _lastParsedChannelRmsDb[channel - 1] = ParseFfmpegDb(channelRmsMetadata.Groups[2].Value);
+            UpdateAudioSnapshot();
+            return true;
+        }
+
+        var channelPeakMetadata = ChannelPeakMetadataRegex.Match(line);
+        if (channelPeakMetadata.Success)
+        {
+            var channel = Math.Clamp(int.Parse(channelPeakMetadata.Groups[1].Value, CultureInfo.InvariantCulture), 1, MaxAudioStatsChannels);
+            var channelBit = RememberParsedAudioChannel(channel);
+            _parsedAudioChannelPeakMask |= channelBit;
+            _lastParsedChannelPeakDb[channel - 1] = ParseFfmpegDb(channelPeakMetadata.Groups[2].Value);
+            UpdateAudioSnapshot();
+            return true;
+        }
+
+        var rmsMetadata = OverallRmsMetadataRegex.Match(line);
         if (rmsMetadata.Success)
         {
             _lastParsedRmsDb = ParseFfmpegDb(rmsMetadata.Groups[1].Value);
@@ -3509,7 +5411,7 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
             return true;
         }
 
-        var peakMetadata = Regex.Match(line, @"lavfi\.astats\.Overall\.Peak_level=(-?inf|[-+]?\d+(?:\.\d+)?)", RegexOptions.IgnoreCase);
+        var peakMetadata = OverallPeakMetadataRegex.Match(line);
         if (peakMetadata.Success)
         {
             _lastParsedPeakDb = ParseFfmpegDb(peakMetadata.Groups[1].Value);
@@ -3522,7 +5424,7 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
             return true;
         }
 
-        var rms = Regex.Match(line, @"RMS level dB:\s*(-?inf|[-+]?\d+(?:\.\d+)?)", RegexOptions.IgnoreCase);
+        var rms = LegacyRmsLogRegex.Match(line);
         if (rms.Success)
         {
             _lastParsedRmsDb = ParseFfmpegDb(rms.Groups[1].Value);
@@ -3530,7 +5432,7 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
             return true;
         }
 
-        var peak = Regex.Match(line, @"Peak level dB:\s*(-?inf|[-+]?\d+(?:\.\d+)?)", RegexOptions.IgnoreCase);
+        var peak = LegacyPeakLogRegex.Match(line);
         if (peak.Success)
         {
             _lastParsedPeakDb = ParseFfmpegDb(peak.Groups[1].Value);
@@ -3539,6 +5441,13 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
         }
 
         return false;
+    }
+
+    private int RememberParsedAudioChannel(int channel)
+    {
+        var channelBit = 1 << (channel - 1);
+        _parsedAudioChannelMask |= channelBit;
+        return channelBit;
     }
 
     private static bool IsBenignFfmpegLogLine(string line)
@@ -3550,6 +5459,7 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
             line.Contains("Duration:", StringComparison.OrdinalIgnoreCase) ||
             line.Contains("Stream #", StringComparison.OrdinalIgnoreCase) ||
             line.Contains("Metadata:", StringComparison.OrdinalIgnoreCase) ||
+            line.Contains("lavfi.astats.", StringComparison.OrdinalIgnoreCase) ||
             line.Contains("encoder", StringComparison.OrdinalIgnoreCase) ||
             line.Contains("frame=", StringComparison.OrdinalIgnoreCase) ||
             line.Contains("size=", StringComparison.OrdinalIgnoreCase) ||
@@ -3573,8 +5483,43 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
     {
         lock (_sync)
         {
-            var clippingSamples = _lastParsedPeakDb >= -1 ? 1 : 0;
-            _audioSnapshot = new AudioLevelSnapshot(_lastParsedRmsDb, _lastParsedPeakDb, clippingSamples, DateTimeOffset.UtcNow);
+            var channelMask = _parsedAudioChannelMask;
+            var channelRmsMask = _parsedAudioChannelRmsMask;
+            var channelPeakMask = _parsedAudioChannelPeakMask;
+            var channelCount = 0;
+            for (var channel = 1; channel <= MaxAudioStatsChannels; channel++)
+            {
+                if ((channelMask & (1 << (channel - 1))) != 0)
+                {
+                    channelCount++;
+                }
+            }
+
+            var channels = channelCount > 0 ? new AudioChannelLevel[channelCount] : Array.Empty<AudioChannelLevel>();
+            var clippingSamples = 0;
+            var channelIndex = 0;
+            for (var channel = 1; channel <= MaxAudioStatsChannels; channel++)
+            {
+                if ((channelMask & (1 << (channel - 1))) == 0)
+                {
+                    continue;
+                }
+
+                var channelBit = 1 << (channel - 1);
+                var channelIndex0 = channel - 1;
+                var levelDb = (channelRmsMask & channelBit) != 0 ? _lastParsedChannelRmsDb[channelIndex0] : _lastParsedRmsDb;
+                var peakDb = (channelPeakMask & channelBit) != 0 ? _lastParsedChannelPeakDb[channelIndex0] : _lastParsedPeakDb;
+                var channelClippingSamples = peakDb >= -1 ? 1 : 0;
+                channels[channelIndex++] = new AudioChannelLevel(channel, levelDb, peakDb, channelClippingSamples);
+                clippingSamples += channelClippingSamples;
+            }
+
+            if (channelCount == 0 && _lastParsedPeakDb >= -1)
+            {
+                clippingSamples = 1;
+            }
+
+            _audioSnapshot = new AudioLevelSnapshot(_lastParsedRmsDb, _lastParsedPeakDb, clippingSamples, DateTimeOffset.UtcNow, channels);
         }
     }
 
@@ -3615,14 +5560,11 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
                     offset += read;
                 }
 
-                var frameCopy = new byte[FrameBytes];
-                Buffer.BlockCopy(frame, 0, frameCopy, 0, FrameBytes);
-                UpdateSnapshot(frameCopy);
-                _ = _dispatcher.BeginInvoke(() =>
-                {
-                    Bitmap.WritePixels(new Int32Rect(0, 0, Width, Height), frameCopy, Stride, 0);
-                }, DispatcherPriority.Render);
+                var frameReadTicks = DateTime.UtcNow.Ticks;
+                Interlocked.Exchange(ref _lastFrameReadTicks, frameReadTicks);
+                UpdateSnapshot(frame);
                 _state = "playing";
+                QueueBitmapFrame(frame, frameReadTicks);
             }
         }
         catch (OperationCanceledException)
@@ -3634,6 +5576,90 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
             _lastError = MainWindow.MaskStreamUrl(ex.Message);
             _state = "error";
         }
+    }
+
+    private void QueueBitmapFrame(byte[] frame, long frameReadTicks)
+    {
+        var shouldSchedule = false;
+        lock (_bitmapFrameSync)
+        {
+            if (!_bitmapWriteScheduled)
+            {
+                Buffer.BlockCopy(frame, 0, _bitmapWriteFrameBuffer, 0, FrameBytes);
+                _bitmapWriteFrameReadTicks = frameReadTicks;
+                _bitmapWriteScheduled = true;
+                shouldSchedule = true;
+                Interlocked.Increment(ref _bitmapFramesQueued);
+            }
+            else
+            {
+                if (_bitmapPendingFrameReady)
+                {
+                    Interlocked.Increment(ref _bitmapFramesDropped);
+                }
+
+                Buffer.BlockCopy(frame, 0, _bitmapPendingFrameBuffer, 0, FrameBytes);
+                _bitmapPendingFrameReadTicks = frameReadTicks;
+                _bitmapPendingFrameReady = true;
+                Interlocked.Increment(ref _bitmapFramesCoalesced);
+            }
+        }
+
+        if (shouldSchedule)
+        {
+            DispatchBitmapFrame();
+        }
+    }
+
+    private void DispatchBitmapFrame()
+    {
+        _ = _dispatcher.BeginInvoke(() =>
+        {
+            try
+            {
+                Bitmap.WritePixels(new Int32Rect(0, 0, Width, Height), _bitmapWriteFrameBuffer, Stride, 0);
+                var presentedTicks = DateTime.UtcNow.Ticks;
+                var presentedFrameReadTicks = _bitmapWriteFrameReadTicks;
+                Interlocked.Exchange(ref _lastFramePresentedTicks, presentedTicks);
+                Interlocked.Exchange(ref _lastPresentedFrameReadTicks, presentedFrameReadTicks);
+                var presentedFrames = Interlocked.Increment(ref _bitmapFramesPresented);
+                if (presentedFrames == 1)
+                {
+                    try
+                    {
+                        _firstFramePresented();
+                    }
+                    catch (Exception ex)
+                    {
+                        _lastError = MainWindow.MaskStreamUrl(ex.Message);
+                    }
+                }
+            }
+            finally
+            {
+                var shouldScheduleNext = false;
+                lock (_bitmapFrameSync)
+                {
+                    if (_bitmapPendingFrameReady)
+                    {
+                        (_bitmapWriteFrameBuffer, _bitmapPendingFrameBuffer) = (_bitmapPendingFrameBuffer, _bitmapWriteFrameBuffer);
+                        (_bitmapWriteFrameReadTicks, _bitmapPendingFrameReadTicks) = (_bitmapPendingFrameReadTicks, _bitmapWriteFrameReadTicks);
+                        _bitmapPendingFrameReady = false;
+                        shouldScheduleNext = true;
+                        Interlocked.Increment(ref _bitmapFramesQueued);
+                    }
+                    else
+                    {
+                        _bitmapWriteScheduled = false;
+                    }
+                }
+
+                if (shouldScheduleNext)
+                {
+                    DispatchBitmapFrame();
+                }
+            }
+        }, DispatcherPriority.Render);
     }
 
     private bool TryStartNextCandidate(ref Process process, CancellationToken token)
@@ -3668,43 +5694,56 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor
         double total = 0;
         double diffTotal = 0;
         var darkPixels = 0;
-        var pixelCount = Width * Height;
-        for (var index = 0; index < frame.Length; index += 3)
+        var sampleCount = 0;
+        var sampleIndex = 0;
+        for (var y = 0; y < Height; y += AnalysisSampleStrideY)
         {
-            var blue = frame[index];
-            var green = frame[index + 1];
-            var red = frame[index + 2];
-            var luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
-            total += luma;
-            if (luma / 255 <= DarkPixelThreshold)
+            var rowStart = y * Stride;
+            for (var x = 0; x < Width; x += AnalysisSampleStrideX)
             {
-                darkPixels++;
-            }
+                var index = rowStart + x * BytesPerPixel;
+                var blue = frame[index];
+                var green = frame[index + 1];
+                var red = frame[index + 2];
+                var luma = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+                total += luma;
+                sampleCount++;
+                if (luma / 255 <= DarkPixelThreshold)
+                {
+                    darkPixels++;
+                }
 
-            if (_hasPreviousFrame)
-            {
-                var previousBlue = _previousBuffer[index];
-                var previousGreen = _previousBuffer[index + 1];
-                var previousRed = _previousBuffer[index + 2];
-                var previousLuma = 0.2126 * previousRed + 0.7152 * previousGreen + 0.0722 * previousBlue;
-                diffTotal += Math.Abs(luma - previousLuma);
+                if (_hasPreviousFrame)
+                {
+                    diffTotal += Math.Abs(luma - _previousSampleLuma[sampleIndex]);
+                }
+
+                _previousSampleLuma[sampleIndex] = luma;
+                sampleIndex++;
             }
         }
 
-        var difference = _hasPreviousFrame ? diffTotal / pixelCount / 255 : 1;
+        sampleCount = Math.Max(1, sampleCount);
+        var difference = _hasPreviousFrame ? diffTotal / sampleCount / 255 : 1;
         _stableFrames = difference <= StabilityDifferenceThreshold ? _stableFrames + 1 : 0;
-        Buffer.BlockCopy(frame, 0, _previousBuffer, 0, frame.Length);
         _hasPreviousFrame = true;
+        VideoLumaSnapshot snapshot;
         lock (_sync)
         {
             _framesRead++;
             _bytesRead += frame.Length;
-            _snapshot = new VideoLumaSnapshot(
-                total / pixelCount / 255,
-                darkPixels / (double)pixelCount,
+            snapshot = new VideoLumaSnapshot(
+                total / sampleCount / 255,
+                darkPixels / (double)sampleCount,
                 difference,
                 _stableFrames,
                 DateTimeOffset.UtcNow);
+            _snapshot = snapshot;
+        }
+
+        if (snapshot.Luma <= BlackLumaThreshold && snapshot.DarkRatio >= BlackPixelRatioThreshold)
+        {
+            _blackFrameDetected();
         }
     }
 
@@ -4010,9 +6049,7 @@ internal sealed class VideoLumaMonitor : IVideoAnalysisMonitor
     public void Start()
     {
         using var media = new Media(_libVlc, _inputUrl, FromType.FromLocation);
-        media.AddOption(":no-audio");
-        media.AddOption(":rtsp-tcp");
-        media.AddOption(":network-caching=300");
+        MainWindow.AddLowLatencyVlcMediaOptions(media, disableAudio: true);
         if (!_player.Play(media))
         {
             throw new InvalidOperationException("LibVLC failed to start video analysis monitor.");
@@ -4118,11 +6155,14 @@ internal sealed class VideoLumaMonitor : IVideoAnalysisMonitor
 internal sealed class AudioLevelMonitor : IDisposable
 {
     private const uint SampleRate = 48000;
-    private const uint ChannelCount = 2;
+    private const int DefaultChannelCount = 2;
+    private const int MaxChannelCount = 16;
     private const double SilenceFloorDb = -120;
     private const double DefaultClippingThresholdDb = -1;
 
     private readonly object _sync = new();
+    private readonly VlcMediaPlayer.LibVLCAudioSetupCb _setupCallback;
+    private readonly VlcMediaPlayer.LibVLCAudioCleanupCb _cleanupCallback;
     private readonly VlcMediaPlayer.LibVLCAudioPlayCb _playCallback;
     private readonly VlcMediaPlayer.LibVLCAudioPauseCb _pauseCallback;
     private readonly VlcMediaPlayer.LibVLCAudioResumeCb _resumeCallback;
@@ -4130,10 +6170,13 @@ internal sealed class AudioLevelMonitor : IDisposable
     private readonly VlcMediaPlayer.LibVLCAudioDrainCb _drainCallback;
     private VlcMediaPlayer? _player;
     private AudioLevelSnapshot? _snapshot;
+    private int _channelCount = DefaultChannelCount;
     private bool _disposed;
 
     public AudioLevelMonitor()
     {
+        _setupCallback = OnAudioSetup;
+        _cleanupCallback = _ => { };
         _playCallback = OnAudioPlay;
         _pauseCallback = (_, _) => { };
         _resumeCallback = (_, _) => { };
@@ -4146,7 +6189,7 @@ internal sealed class AudioLevelMonitor : IDisposable
     public void Attach(VlcMediaPlayer player)
     {
         _player = player;
-        player.SetAudioFormat("S16N", SampleRate, ChannelCount);
+        player.SetAudioFormatCallback(_setupCallback, _cleanupCallback);
         player.SetAudioCallbacks(_playCallback, _pauseCallback, _resumeCallback, _flushCallback, _drainCallback);
     }
 
@@ -4156,7 +6199,7 @@ internal sealed class AudioLevelMonitor : IDisposable
         {
             if (_snapshot is null)
             {
-                snapshot = new AudioLevelSnapshot(SilenceFloorDb, SilenceFloorDb, 0, DateTimeOffset.MinValue);
+                snapshot = new AudioLevelSnapshot(SilenceFloorDb, SilenceFloorDb, 0, DateTimeOffset.MinValue, []);
                 return false;
             }
 
@@ -4165,42 +6208,94 @@ internal sealed class AudioLevelMonitor : IDisposable
         }
     }
 
+    private int OnAudioSetup(ref IntPtr opaque, ref IntPtr format, ref uint rate, ref uint channels)
+    {
+        try
+        {
+            if (format != IntPtr.Zero)
+            {
+                Marshal.Copy(Encoding.ASCII.GetBytes("S16N"), 0, format, 4);
+            }
+
+            rate = rate == 0 ? SampleRate : rate;
+            var negotiatedChannels = channels == 0 ? DefaultChannelCount : (int)Math.Min(channels, MaxChannelCount);
+            _channelCount = Math.Clamp(negotiatedChannels, 1, MaxChannelCount);
+            channels = (uint)_channelCount;
+            return 0;
+        }
+        catch
+        {
+            _channelCount = DefaultChannelCount;
+            channels = (uint)DefaultChannelCount;
+            rate = SampleRate;
+            return 0;
+        }
+    }
+
     private void OnAudioPlay(IntPtr data, IntPtr samples, uint count, long pts)
     {
         try
         {
-            var sampleCount = checked((int)(count * ChannelCount));
+            var channelCount = Math.Clamp(_channelCount, 1, MaxChannelCount);
+            var sampleCount = checked((int)(count * (uint)channelCount));
             if (sampleCount <= 0)
             {
                 return;
             }
 
-            var buffer = new short[sampleCount];
-            Marshal.Copy(samples, buffer, 0, sampleCount);
-            var clippingAmplitude = short.MaxValue * Math.Pow(10, DefaultClippingThresholdDb / 20.0);
-
-            double sumSquares = 0;
-            var maxAbs = 0;
-            var clippingSamples = 0;
-            foreach (var sample in buffer)
+            var buffer = ArrayPool<short>.Shared.Rent(sampleCount);
+            try
             {
-                var abs = Math.Abs((int)sample);
-                maxAbs = Math.Max(maxAbs, abs);
-                if (abs >= clippingAmplitude)
+                Marshal.Copy(samples, buffer, 0, sampleCount);
+                var clippingAmplitude = short.MaxValue * Math.Pow(10, DefaultClippingThresholdDb / 20.0);
+
+                Span<double> perChannelSumSquares = stackalloc double[MaxChannelCount];
+                Span<int> perChannelMaxAbs = stackalloc int[MaxChannelCount];
+                Span<int> perChannelClippingSamples = stackalloc int[MaxChannelCount];
+                double sumSquares = 0;
+                var maxAbs = 0;
+                var clippingSamples = 0;
+                for (var index = 0; index < sampleCount; index++)
                 {
-                    clippingSamples++;
+                    var sample = buffer[index];
+                    var channelIndex = index % channelCount;
+                    var abs = Math.Abs((int)sample);
+                    maxAbs = Math.Max(maxAbs, abs);
+                    perChannelMaxAbs[channelIndex] = Math.Max(perChannelMaxAbs[channelIndex], abs);
+                    if (abs >= clippingAmplitude)
+                    {
+                        clippingSamples++;
+                        perChannelClippingSamples[channelIndex]++;
+                    }
+
+                    var normalized = sample / 32768.0;
+                    sumSquares += normalized * normalized;
+                    perChannelSumSquares[channelIndex] += normalized * normalized;
                 }
 
-                var normalized = sample / 32768.0;
-                sumSquares += normalized * normalized;
-            }
+                var rms = Math.Sqrt(sumSquares / sampleCount);
+                var levelDb = rms > 0 ? 20 * Math.Log10(rms) : SilenceFloorDb;
+                var peakDb = maxAbs > 0 ? 20 * Math.Log10(Math.Min(maxAbs, 32767) / 32767.0) : SilenceFloorDb;
+                var frames = Math.Max(1, sampleCount / channelCount);
+                var channels = new AudioChannelLevel[channelCount];
+                for (var channel = 0; channel < channelCount; channel++)
+                {
+                    var channelRms = Math.Sqrt(perChannelSumSquares[channel] / frames);
+                    var channelLevelDb = channelRms > 0 ? 20 * Math.Log10(channelRms) : SilenceFloorDb;
+                    var channelPeakDb = perChannelMaxAbs[channel] > 0
+                        ? 20 * Math.Log10(Math.Min(perChannelMaxAbs[channel], 32767) / 32767.0)
+                        : SilenceFloorDb;
+                    channels[channel] = new AudioChannelLevel(channel + 1, channelLevelDb, channelPeakDb, perChannelClippingSamples[channel]);
+                }
 
-            var rms = Math.Sqrt(sumSquares / sampleCount);
-            var levelDb = rms > 0 ? 20 * Math.Log10(rms) : SilenceFloorDb;
-            var peakDb = maxAbs > 0 ? 20 * Math.Log10(Math.Min(maxAbs, 32767) / 32767.0) : SilenceFloorDb;
-            lock (_sync)
+                lock (_sync)
+                {
+                    _snapshot = new AudioLevelSnapshot(levelDb, peakDb, clippingSamples, DateTimeOffset.UtcNow, channels);
+                }
+            }
+            finally
             {
-                _snapshot = new AudioLevelSnapshot(levelDb, peakDb, clippingSamples, DateTimeOffset.UtcNow);
+                ArrayPool<short>.Shared.Return(buffer);
             }
         }
         catch

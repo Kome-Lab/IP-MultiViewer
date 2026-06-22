@@ -26,6 +26,9 @@ public partial class SettingsWindow : Window
         DeleteStreamButton.Click += _owner.DeleteStreamButton_Click;
         LayoutCombo.SelectionChanged += _owner.LayoutCombo_SelectionChanged;
         AlertProfileCombo.SelectionChanged += _owner.AlertProfileCombo_SelectionChanged;
+        AddAlertProfileButton.Click += _owner.AddAlertProfileButton_Click;
+        DuplicateAlertProfileButton.Click += _owner.DuplicateAlertProfileButton_Click;
+        DeleteAlertProfileButton.Click += _owner.DeleteAlertProfileButton_Click;
         ApplyAlertProfileButton.Click += _owner.ApplyAlertProfileButton_Click;
     }
 

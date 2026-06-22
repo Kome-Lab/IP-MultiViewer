@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\desktop-windows\IPMultiViewer.Desktop.csproj" />
+  </ItemGroup>
+</Project>

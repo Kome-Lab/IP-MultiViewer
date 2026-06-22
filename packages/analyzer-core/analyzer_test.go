@@ -20,20 +20,35 @@ func TestVideoAudioRules(t *testing.T) {
 	}
 }
 
-func TestDurationBasedAlertDeduplication(t *testing.T) {
+func TestBlackAlertIsImmediateAndDeduplicated(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MinBlackDuration = 30 * time.Second
+	now := time.Unix(100, 0)
+	state := &DurationState{}
+	got := EvaluateVideo(now, FrameStats{AverageLuma: 0.01, Difference: 1}, cfg, state)
+	if len(got) != 1 || got[0].Type != "video.black" {
+		t.Fatalf("expected immediate black alert: %#v", got)
+	}
+	got = EvaluateVideo(now.Add(time.Second), FrameStats{AverageLuma: 0.01, Difference: 1}, cfg, state)
+	if len(got) != 0 {
+		t.Fatalf("open black alert should dedupe: %#v", got)
+	}
+}
+
+func TestDurationBasedFreezeAlertDeduplication(t *testing.T) {
 	cfg := DefaultConfig()
 	now := time.Unix(100, 0)
 	state := &DurationState{}
-	if got := EvaluateVideo(now, FrameStats{AverageLuma: 0.01, Difference: 1}, cfg, state); len(got) != 0 {
-		t.Fatalf("first black frame should not alert: %#v", got)
+	if got := EvaluateVideo(now, FrameStats{AverageLuma: 1, Difference: 0.001}, cfg, state); len(got) != 0 {
+		t.Fatalf("first frozen frame should not alert: %#v", got)
 	}
-	got := EvaluateVideo(now.Add(4*time.Second), FrameStats{AverageLuma: 0.01, Difference: 1}, cfg, state)
-	if len(got) != 1 || got[0].Type != "video.black" {
-		t.Fatalf("expected black alert: %#v", got)
+	got := EvaluateVideo(now.Add(6*time.Second), FrameStats{AverageLuma: 1, Difference: 0.001}, cfg, state)
+	if len(got) != 1 || got[0].Type != "video.freeze" {
+		t.Fatalf("expected freeze alert: %#v", got)
 	}
-	got = EvaluateVideo(now.Add(5*time.Second), FrameStats{AverageLuma: 0.01, Difference: 1}, cfg, state)
+	got = EvaluateVideo(now.Add(7*time.Second), FrameStats{AverageLuma: 1, Difference: 0.001}, cfg, state)
 	if len(got) != 0 {
-		t.Fatalf("open black alert should dedupe: %#v", got)
+		t.Fatalf("open freeze alert should dedupe: %#v", got)
 	}
 }
 
