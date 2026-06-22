@@ -1,6 +1,8 @@
 bin/
 obj/
 coverage.out
+artifacts/
+dist/
 .env
 *.log
 apps/desktop-windows/bin/

@@ -1,4 +1,4 @@
-.PHONY: test build build-server build-agent
+.PHONY: test build build-server build-agent package-server
 
 test:
 	go test ./...
@@ -11,3 +11,6 @@ build-server:
 
 build-agent:
 	go build -o bin/ip-multiviewer-agent ./apps/agent/cmd/agent
+
+package-server:
+	pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/package-server.ps1

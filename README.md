@@ -55,6 +55,14 @@ single-file 成果物を Desktop に出す場合:
 powershell -ExecutionPolicy Bypass -File apps/desktop-windows/publish-single-file.ps1
 ```
 
+Server / Agent の配布パッケージを作る場合:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/package-server.ps1 -Version v0.0.0-local -Runtime linux-x64
+```
+
+タグ `v*` または GitHub Actions の手動実行では `.github/workflows/release-server.yml` が `ip-multiviewer_<version>_server_linux_x64.zip` と `ip-multiviewer_<version>_server_linux_arm64.zip`、それぞれの `.sha256` を作成します。パッケージには `ip-multiviewer-server`、`ip-multiviewer-agent`、`systemd/*.service.example`、`deploy/*.env.example`、`.env.example`、`docker-compose.prod.yml` が含まれます。
+
 ## Windows icon and signing
 
 - App icon は `apps/desktop-windows/Assets/AppIcon.ico` です。
