@@ -114,6 +114,13 @@ public sealed class TileViewModel
 
 public static class LocalConfigStore
 {
+    private const string DataDirectoryEnvironmentVariable = "IPMV_DATA_DIR";
+    private const string LongDataDirectoryEnvironmentVariable = "IPMULTIVIEWER_DATA_DIR";
+    private const string ConfigDirectoryEnvironmentVariable = "IPMV_CONFIG_DIR";
+    private const string LongConfigDirectoryEnvironmentVariable = "IPMULTIVIEWER_CONFIG_DIR";
+    private const string LogDirectoryEnvironmentVariable = "IPMV_LOG_DIR";
+    private const string LongLogDirectoryEnvironmentVariable = "IPMULTIVIEWER_LOG_DIR";
+
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
@@ -121,13 +128,30 @@ public static class LocalConfigStore
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    private static string BaseDirectory =>
+        EnvironmentPath(DataDirectoryEnvironmentVariable) ??
+        EnvironmentPath(LongDataDirectoryEnvironmentVariable) ??
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "IPMultiViewer");
+
     public static string ConfigDirectory =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "IPMultiViewer", "config");
+        EnvironmentPath(ConfigDirectoryEnvironmentVariable) ??
+        EnvironmentPath(LongConfigDirectoryEnvironmentVariable) ??
+        Path.Combine(BaseDirectory, "config");
 
     public static string LogDirectory =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "IPMultiViewer", "logs");
+        EnvironmentPath(LogDirectoryEnvironmentVariable) ??
+        EnvironmentPath(LongLogDirectoryEnvironmentVariable) ??
+        Path.Combine(BaseDirectory, "logs");
 
     public static string DefaultConfigPath => Path.Combine(ConfigDirectory, "local-config.json");
+
+    private static string? EnvironmentPath(string name)
+    {
+        var value = Environment.GetEnvironmentVariable(name);
+        return string.IsNullOrWhiteSpace(value)
+            ? null
+            : Path.GetFullPath(Environment.ExpandEnvironmentVariables(value.Trim()));
+    }
 
     public static LocalConfig LoadOrCreate()
     {

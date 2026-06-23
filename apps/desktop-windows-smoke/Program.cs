@@ -9,6 +9,8 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -25,6 +27,7 @@ internal static class Program
         object? sessionB = null;
         try
         {
+            AssertConfigStorePathOverrides();
             using var appScope = new WpfAppScope();
             var window = new MainWindow
             {
@@ -45,9 +48,12 @@ internal static class Program
             AssertTextSetHelperSkipsUnchangedText();
             AssertSrtCandidateModes();
             AssertLowLatencyPlaybackOptions();
+            AssertPlaybackRestartBackoff();
             AssertGpuRenderingUsesLibVlcPlayback(window);
             AssertPlaybackStatusWaitsForPresentedVideo(window);
             AssertAudioMeterSidePanels(window);
+            AssertAudioLevelMonitorThrottlesCallbacks();
+            AssertSharedSidecarAnalysisMonitors(window);
             AssertFfmpegSnapshotSampling();
             AssertFfmpegSidecarAnalysisSnapshotSampling();
             AssertFfmpegAudioStatsParser();
@@ -69,6 +75,41 @@ internal static class Program
         {
             DisposeReflective(sessionA);
             DisposeReflective(sessionB);
+        }
+    }
+
+    private static void AssertConfigStorePathOverrides()
+    {
+        var previousDataDir = Environment.GetEnvironmentVariable("IPMV_DATA_DIR");
+        var previousConfigDir = Environment.GetEnvironmentVariable("IPMV_CONFIG_DIR");
+        var previousLogDir = Environment.GetEnvironmentVariable("IPMV_LOG_DIR");
+        try
+        {
+            var baseDir = Path.Combine(Path.GetTempPath(), "ipmv-smoke-data-dir");
+            Environment.SetEnvironmentVariable("IPMV_DATA_DIR", baseDir);
+            Environment.SetEnvironmentVariable("IPMV_CONFIG_DIR", null);
+            Environment.SetEnvironmentVariable("IPMV_LOG_DIR", null);
+            if (!string.Equals(LocalConfigStore.ConfigDirectory, Path.Combine(baseDir, "config"), StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(LocalConfigStore.LogDirectory, Path.Combine(baseDir, "logs"), StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("IPMV_DATA_DIR did not isolate config/log directories.");
+            }
+
+            var configDir = Path.Combine(baseDir, "custom-config");
+            var logDir = Path.Combine(baseDir, "custom-logs");
+            Environment.SetEnvironmentVariable("IPMV_CONFIG_DIR", configDir);
+            Environment.SetEnvironmentVariable("IPMV_LOG_DIR", logDir);
+            if (!string.Equals(LocalConfigStore.DefaultConfigPath, Path.Combine(configDir, "local-config.json"), StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(LocalConfigStore.LogDirectory, logDir, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("Explicit config/log directory overrides were not honored.");
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("IPMV_DATA_DIR", previousDataDir);
+            Environment.SetEnvironmentVariable("IPMV_CONFIG_DIR", previousConfigDir);
+            Environment.SetEnvironmentVariable("IPMV_LOG_DIR", previousLogDir);
         }
     }
 
@@ -344,9 +385,16 @@ internal static class Program
         if (!ContainsArgumentPair(args, "-probesize", "32768") ||
             !ContainsArgumentPair(args, "-analyzeduration", "0") ||
             !ContainsArgumentPair(args, "-fflags", "nobuffer") ||
-            !ContainsArgumentPair(args, "-flags", "low_delay"))
+            !ContainsArgumentPair(args, "-flags", "low_delay") ||
+            !ContainsArgumentPair(args, "-threads", "1") ||
+            !ContainsArgumentPair(args, "-filter_threads", "1"))
         {
             throw new InvalidOperationException("FFmpeg input arguments must keep low-latency probe and buffer settings.");
+        }
+
+        if (OperatingSystem.IsWindows() && !ContainsArgumentPair(args, "-hwaccel", "auto"))
+        {
+            throw new InvalidOperationException("FFmpeg playback should request best-effort hardware decode on Windows.");
         }
 
         var previousGpuEnv = Environment.GetEnvironmentVariable("IPMV_GPU_RENDERING");
@@ -367,14 +415,45 @@ internal static class Program
         }
     }
 
+    private static void AssertPlaybackRestartBackoff()
+    {
+        var delaySeconds = Method(typeof(MainWindow), "PlaybackRestartDelaySeconds", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+        var delays = new[]
+        {
+            (double)delaySeconds.Invoke(null, [2.0, 0])!,
+            (double)delaySeconds.Invoke(null, [5.0, 0])!,
+            (double)delaySeconds.Invoke(null, [5.0, 1])!,
+            (double)delaySeconds.Invoke(null, [5.0, 2])!,
+            (double)delaySeconds.Invoke(null, [5.0, 3])!,
+            (double)delaySeconds.Invoke(null, [5.0, 9])!
+        };
+        var expected = new[] { 5.0, 5.0, 10.0, 20.0, 40.0, 60.0 };
+        if (!delays.SequenceEqual(expected))
+        {
+            throw new InvalidOperationException($"Playback restart backoff was {string.Join(", ", delays)}, want {string.Join(", ", expected)}.");
+        }
+    }
+
     private static void AssertGpuRenderingUsesLibVlcPlayback(MainWindow window)
     {
         var previousGpuEnv = Environment.GetEnvironmentVariable("IPMV_GPU_RENDERING");
         var previousForceEnv = Environment.GetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK");
+        var previousGpuAudioMetersEnv = Environment.GetEnvironmentVariable("IPMV_GPU_AUDIO_METERS");
         try
         {
             Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", "1");
             Environment.SetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK", null);
+            Environment.SetEnvironmentVariable("IPMV_GPU_AUDIO_METERS", null);
+            var srtStream = new StreamConfig
+            {
+                Id = "smoke-gpu-srt",
+                Name = "Smoke GPU SRT",
+                Enabled = true,
+                InputUrl = "srt://127.0.0.1:12000",
+                InputProtocol = "srt",
+                AnalysisEnabled = true,
+                AudioMonitorEnabled = true
+            };
             var rtspAnalysisStream = new StreamConfig
             {
                 Id = "smoke-gpu-rtsp",
@@ -391,29 +470,72 @@ internal static class Program
                 throw new InvalidOperationException("GPU rendering mode must keep analysis-enabled RTSP streams on LibVLC playback instead of FFmpeg bitmap playback.");
             }
 
+            var shouldAttachAudioMonitor = (bool)Method(window.GetType(), "ShouldAttachAudioMonitor", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, [rtspAnalysisStream])!;
+            if (shouldAttachAudioMonitor)
+            {
+                throw new InvalidOperationException("GPU rendering mode must keep LibVLC audio callbacks disabled unless explicitly requested.");
+            }
+
+            Environment.SetEnvironmentVariable("IPMV_GPU_AUDIO_METERS", "1");
+            shouldAttachAudioMonitor = (bool)Method(window.GetType(), "ShouldAttachAudioMonitor", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, [rtspAnalysisStream])!;
+            if (!shouldAttachAudioMonitor)
+            {
+                throw new InvalidOperationException("IPMV_GPU_AUDIO_METERS=1 must re-enable GPU audio meter callbacks.");
+            }
+
+            var config = (LocalConfig)Field(window, "_config").GetValue(window)!;
+            var previousGlobalMute = config.GlobalMute;
+            try
+            {
+                var disablePlaybackAudio = Method(window.GetType(), "ShouldDisableLibVlcPlaybackAudio", BindingFlags.Instance | BindingFlags.NonPublic);
+                config.GlobalMute = true;
+                Environment.SetEnvironmentVariable("IPMV_GPU_AUDIO_METERS", null);
+                if ((bool)disablePlaybackAudio.Invoke(window, [rtspAnalysisStream, null])! != true)
+                {
+                    throw new InvalidOperationException("Muted GPU playback without audio callbacks must pass :no-audio to LibVLC.");
+                }
+
+                config.GlobalMute = false;
+                if ((bool)disablePlaybackAudio.Invoke(window, [rtspAnalysisStream, null])!)
+                {
+                    throw new InvalidOperationException("Unmuted GPU playback must keep audio available when the stream requests audio monitoring.");
+                }
+
+                rtspAnalysisStream.AudioMonitorEnabled = false;
+                if ((bool)disablePlaybackAudio.Invoke(window, [rtspAnalysisStream, null])! != true)
+                {
+                    throw new InvalidOperationException("Streams with audio monitoring disabled must pass :no-audio to LibVLC.");
+                }
+            }
+            finally
+            {
+                rtspAnalysisStream.AudioMonitorEnabled = true;
+                config.GlobalMute = previousGlobalMute;
+            }
+
             if (FindOnPath("ffmpeg.exe") is not null || FindOnPath("ffmpeg") is not null)
             {
-                var srtStream = new StreamConfig
-                {
-                    Id = "smoke-gpu-srt",
-                    Name = "Smoke GPU SRT",
-                    Enabled = true,
-                    InputUrl = "srt://127.0.0.1:12000",
-                    InputProtocol = "srt",
-                    AnalysisEnabled = true,
-                    AudioMonitorEnabled = true
-                };
                 var srtUsesFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [srtStream])!;
-                if (!srtUsesFfmpeg)
+                if (srtUsesFfmpeg)
                 {
-                    throw new InvalidOperationException("SRT streams should still use the FFmpeg playback fallback.");
+                    throw new InvalidOperationException("GPU rendering mode must keep SRT playback on LibVLC and move analysis to the sidecar.");
                 }
+            }
+
+            Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", null);
+            var standardSrtUsesFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [srtStream])!;
+            if (!standardSrtUsesFfmpeg)
+            {
+                throw new InvalidOperationException("Standard rendering mode should still use the FFmpeg fallback for SRT streams.");
             }
         }
         finally
         {
             Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", previousGpuEnv);
             Environment.SetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK", previousForceEnv);
+            Environment.SetEnvironmentVariable("IPMV_GPU_AUDIO_METERS", previousGpuAudioMetersEnv);
         }
     }
 
@@ -551,6 +673,7 @@ internal static class Program
         meterViewType.GetProperty("TargetLevelRatio")!.SetValue(firstView, 0.80);
         meterViewType.GetProperty("TargetPeakRatio")!.SetValue(firstView, 0.35);
         meterViewType.GetProperty("LastAnimationAt")!.SetValue(firstView, DateTimeOffset.UtcNow.AddMilliseconds(-66));
+        Field(window, "_lastAudioMeterAnimationAt").SetValue(window, DateTimeOffset.UtcNow.AddMilliseconds(-100));
         Method(typeof(MainWindow), "AudioMeterCompositionTarget_Rendering", BindingFlags.Instance | BindingFlags.NonPublic)
             .Invoke(window, [null, EventArgs.Empty]);
         var displayedLevel = (double)meterViewType.GetProperty("DisplayedLevelRatio")!.GetValue(firstView)!;
@@ -562,6 +685,15 @@ internal static class Program
             Math.Abs(fill.Height - audioMeterHeight) > 0.001)
         {
             throw new InvalidOperationException($"Audio meter time-based smoothing was unexpected: level={displayedLevel}, peak={displayedPeak}.");
+        }
+
+        meterViewType.GetProperty("TargetLevelRatio")!.SetValue(firstView, 0.05);
+        Method(typeof(MainWindow), "AudioMeterCompositionTarget_Rendering", BindingFlags.Instance | BindingFlags.NonPublic)
+            .Invoke(window, [null, EventArgs.Empty]);
+        var throttledLevel = (double)meterViewType.GetProperty("DisplayedLevelRatio")!.GetValue(firstView)!;
+        if (Math.Abs(throttledLevel - displayedLevel) > 0.0001)
+        {
+            throw new InvalidOperationException("Audio meter animation throttling did not hold an immediate render tick.");
         }
 
         MethodWithParameterCount(typeof(MainWindow), "UpdateAudioMeterTargets", 2, BindingFlags.Instance | BindingFlags.NonPublic)
@@ -761,11 +893,232 @@ internal static class Program
         }
     }
 
+    private static void AssertAudioLevelMonitorThrottlesCallbacks()
+    {
+        var monitorType = DesktopType("AudioLevelMonitor");
+        var monitor = Activator.CreateInstance(
+            monitorType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [],
+            culture: null) ?? throw new InvalidOperationException("Failed to create audio level monitor.");
+        try
+        {
+            Field(monitor, "_channelCount").SetValue(monitor, 2);
+            var play = MethodWithParameterTypes(
+                monitorType,
+                "OnAudioPlay",
+                [typeof(IntPtr), typeof(IntPtr), typeof(uint), typeof(long)]);
+            var tryGetSnapshot = Method(monitorType, "TryGetSnapshot");
+            var silent = new short[480];
+            var loud = Enumerable.Repeat((short)20000, 480).ToArray();
+
+            InvokeAudioPlay(play, monitor, silent, frames: 240);
+            var levelAfterSilence = AudioLevelDb(tryGetSnapshot, monitor);
+            if (levelAfterSilence > -100)
+            {
+                throw new InvalidOperationException($"Silent audio snapshot level = {levelAfterSilence:0.0} dBFS, want silence floor.");
+            }
+
+            InvokeAudioPlay(play, monitor, loud, frames: 240);
+            var levelAfterImmediateLoud = AudioLevelDb(tryGetSnapshot, monitor);
+            if (levelAfterImmediateLoud > -100)
+            {
+                throw new InvalidOperationException("Audio level monitor processed an immediate callback instead of throttling it.");
+            }
+
+            Thread.Sleep(75);
+            InvokeAudioPlay(play, monitor, loud, frames: 240);
+            var levelAfterThrottledWindow = AudioLevelDb(tryGetSnapshot, monitor);
+            if (levelAfterThrottledWindow < -10)
+            {
+                throw new InvalidOperationException($"Audio level monitor did not resume after throttle window: {levelAfterThrottledWindow:0.0} dBFS.");
+            }
+        }
+        finally
+        {
+            DisposeReflective(monitor);
+        }
+    }
+
+    private static void InvokeAudioPlay(MethodInfo play, object monitor, short[] samples, uint frames)
+    {
+        var byteCount = samples.Length * sizeof(short);
+        var sampleBuffer = Marshal.AllocHGlobal(byteCount);
+        try
+        {
+            Marshal.Copy(samples, 0, sampleBuffer, samples.Length);
+            play.Invoke(monitor, [IntPtr.Zero, sampleBuffer, frames, 0L]);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(sampleBuffer);
+        }
+    }
+
+    private static double AudioLevelDb(MethodInfo tryGetSnapshot, object monitor)
+    {
+        var args = new object?[] { null };
+        if ((bool)tryGetSnapshot.Invoke(monitor, args)! != true || args[0] is null)
+        {
+            throw new InvalidOperationException("Audio level monitor did not expose a snapshot.");
+        }
+
+        return (double)args[0]!.GetType().GetProperty("LevelDb")!.GetValue(args[0])!;
+    }
+
+    private static void AssertSharedSidecarAnalysisMonitors(MainWindow window)
+    {
+        var profile = new AlertProfileConfig();
+        var streamA = new StreamConfig
+        {
+            Id = "shared-sidecar-a",
+            Name = "Shared sidecar A",
+            InputUrl = "rtsp://example.test/shared",
+            InputProtocol = "rtsp",
+            AnalysisEnabled = true
+        };
+        var streamB = new StreamConfig
+        {
+            Id = "shared-sidecar-b",
+            Name = "Shared sidecar B",
+            InputUrl = "rtsp://example.test/shared",
+            InputProtocol = "rtsp",
+            AnalysisEnabled = true
+        };
+        var streamDifferentThreshold = new StreamConfig
+        {
+            Id = "shared-sidecar-c",
+            Name = "Shared sidecar C",
+            InputUrl = "rtsp://example.test/shared",
+            InputProtocol = "rtsp",
+            AnalysisEnabled = true
+        };
+        var keyMethod = Method(typeof(MainWindow), "SidecarAnalysisShareKey", BindingFlags.Static | BindingFlags.NonPublic);
+        var keyA = (string)keyMethod.Invoke(null, [streamA, profile])!;
+        var keyB = (string)keyMethod.Invoke(null, [streamB, profile])!;
+        var differentProfile = new AlertProfileConfig { BlackPixelRatioThreshold = 0.50 };
+        var keyC = (string)keyMethod.Invoke(null, [streamDifferentThreshold, differentProfile])!;
+        if (!string.Equals(keyA, keyB, StringComparison.Ordinal) ||
+            string.Equals(keyA, keyC, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Sidecar analysis share keys did not match identical inputs or separate threshold variants.");
+        }
+
+        var monitorType = DesktopType("FfmpegVideoAnalysisMonitor");
+        var monitor = CreateSidecarMonitor(monitorType, blackFrameDetected: null);
+        var videoMonitors = (IDictionary)Field(window, "_videoMonitors").GetValue(window)!;
+        var shareKeys = (IDictionary)Field(window, "_videoMonitorShareKeys").GetValue(window)!;
+        var sharedMonitors = (IDictionary)Field(window, "_sharedVideoMonitors").GetValue(window)!;
+        try
+        {
+            videoMonitors[streamA.Id] = monitor;
+            videoMonitors[streamB.Id] = monitor;
+            shareKeys[streamA.Id] = keyA;
+            shareKeys[streamB.Id] = keyA;
+            sharedMonitors[keyA] = monitor;
+
+            Method(typeof(MainWindow), "StopVideoMonitor", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, [streamA.Id]);
+            if ((bool)Field(monitor, "_disposed").GetValue(monitor)! ||
+                !videoMonitors.Contains(streamB.Id) ||
+                !sharedMonitors.Contains(keyA))
+            {
+                throw new InvalidOperationException("Shared sidecar monitor was disposed while another stream still referenced it.");
+            }
+
+            Method(typeof(MainWindow), "StopVideoMonitor", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, [streamB.Id]);
+            if (!(bool)Field(monitor, "_disposed").GetValue(monitor)! ||
+                sharedMonitors.Contains(keyA))
+            {
+                throw new InvalidOperationException("Shared sidecar monitor was not disposed after the last stream reference stopped.");
+            }
+        }
+        finally
+        {
+            videoMonitors.Remove(streamA.Id);
+            videoMonitors.Remove(streamB.Id);
+            shareKeys.Remove(streamA.Id);
+            shareKeys.Remove(streamB.Id);
+            sharedMonitors.Remove(keyA);
+            DisposeReflective(monitor);
+        }
+    }
+
     private static void AssertFfmpegSidecarAnalysisSnapshotSampling()
     {
         var monitorType = DesktopType("FfmpegVideoAnalysisMonitor");
+        var ffmpegInput = (string)Method(monitorType, "FfmpegInputUrl", BindingFlags.Static | BindingFlags.NonPublic)
+            .Invoke(null, ["file:///C:/Temp/ipmv/input.mp4"])!;
+        if (!string.Equals(ffmpegInput, @"C:\Temp\ipmv\input.mp4", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"FFmpeg sidecar file URI conversion was unexpected: {ffmpegInput}");
+        }
+
+        var filter = (string)(monitorType.GetField("AnalysisVideoFilter", BindingFlags.Static | BindingFlags.NonPublic)!
+            .GetValue(null) ?? throw new InvalidOperationException("AnalysisVideoFilter value was unavailable."));
+        if (!filter.Contains("fps=10", StringComparison.OrdinalIgnoreCase) ||
+            !filter.Contains("flags=fast_bilinear", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"FFmpeg sidecar analysis filter lost realtime black-detection sampling or fast scaling: {filter}");
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            var args = new Collection<string>();
+            Method(monitorType, "AddLowCostAnalysisInputArguments", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, [args]);
+            if (!ContainsArgumentPair(args, "-hwaccel", "auto") ||
+                !ContainsArgumentPair(args, "-threads", "1") ||
+                !ContainsArgumentPair(args, "-filter_threads", "1") ||
+                !ContainsArgumentPair(args, "-fflags", "nobuffer") ||
+                !ContainsArgumentPair(args, "-flags", "low_delay") ||
+                !ContainsArgumentPair(args, "-probesize", "32768") ||
+                !ContainsArgumentPair(args, "-analyzeduration", "0"))
+            {
+                throw new InvalidOperationException("FFmpeg sidecar analysis must request low-latency, low-cost decode arguments on Windows.");
+            }
+        }
+
         var blackCallbacks = 0;
-        var monitor = Activator.CreateInstance(
+        var monitor = CreateSidecarMonitor(monitorType, () => blackCallbacks++);
+        try
+        {
+            Method(monitorType, "AddBlackFrameDetectedCallback")
+                .Invoke(monitor, [(Action)(() => blackCallbacks++)]);
+            var frameBytes = (int)(monitorType.GetField("FrameBytes", BindingFlags.Static | BindingFlags.NonPublic)!
+                .GetRawConstantValue() ?? throw new InvalidOperationException("FrameBytes constant was unavailable."));
+            var frame = new byte[frameBytes];
+            Method(monitorType, "UpdateSnapshot").Invoke(monitor, [frame]);
+            if (blackCallbacks != 2)
+            {
+                throw new InvalidOperationException($"Sidecar black frame callback count = {blackCallbacks}, want 2.");
+            }
+
+            var tryGetSnapshot = Method(monitorType, "TryGetSnapshot");
+            var args = new object?[] { null };
+            if ((bool)tryGetSnapshot.Invoke(monitor, args)! != true || args[0] is null)
+            {
+                throw new InvalidOperationException("FFmpeg sidecar monitor did not expose a sampled black snapshot.");
+            }
+
+            Array.Fill(frame, (byte)255);
+            Method(monitorType, "UpdateSnapshot").Invoke(monitor, [frame]);
+            if (blackCallbacks != 2)
+            {
+                throw new InvalidOperationException("FFmpeg sidecar monitor fired black callback for a white frame.");
+            }
+        }
+        finally
+        {
+            DisposeReflective(monitor);
+        }
+    }
+
+    private static object CreateSidecarMonitor(Type monitorType, Action? blackFrameDetected)
+    {
+        return Activator.CreateInstance(
             monitorType,
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
             binder: null,
@@ -778,38 +1131,9 @@ internal static class Program
                 0.015,
                 0.04,
                 0.85,
-                (Action)(() => blackCallbacks++)
+                blackFrameDetected
             ],
             culture: null) ?? throw new InvalidOperationException("Failed to create FFmpeg sidecar analysis monitor.");
-        try
-        {
-            var frameBytes = (int)(monitorType.GetField("FrameBytes", BindingFlags.Static | BindingFlags.NonPublic)!
-                .GetRawConstantValue() ?? throw new InvalidOperationException("FrameBytes constant was unavailable."));
-            var frame = new byte[frameBytes];
-            Method(monitorType, "UpdateSnapshot").Invoke(monitor, [frame]);
-            if (blackCallbacks != 1)
-            {
-                throw new InvalidOperationException($"Sidecar black frame callback count = {blackCallbacks}, want 1.");
-            }
-
-            var tryGetSnapshot = Method(monitorType, "TryGetSnapshot");
-            var args = new object?[] { null };
-            if ((bool)tryGetSnapshot.Invoke(monitor, args)! != true || args[0] is null)
-            {
-                throw new InvalidOperationException("FFmpeg sidecar monitor did not expose a sampled black snapshot.");
-            }
-
-            Array.Fill(frame, (byte)255);
-            Method(monitorType, "UpdateSnapshot").Invoke(monitor, [frame]);
-            if (blackCallbacks != 1)
-            {
-                throw new InvalidOperationException("FFmpeg sidecar monitor fired black callback for a white frame.");
-            }
-        }
-        finally
-        {
-            DisposeReflective(monitor);
-        }
     }
 
     private static void AssertFfmpegAudioStatsParser()
@@ -903,6 +1227,12 @@ internal static class Program
             var ffmpegSessions = (IDictionary)Field(window, "_ffmpegPlaybackSessions").GetValue(window)!;
             var playbackSnapshots = (IDictionary)Field(window, "_playbackSnapshots").GetValue(window)!;
             ffmpegSessions[stream.Id] = session;
+            playbackSnapshots[stream.Id] = Method(sessionType, "CurrentPlaybackSnapshot").Invoke(session, []);
+            Method(typeof(MainWindow), "UpdateTileChrome", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, [stream, null]);
+
+            Method(sessionType, "QueueBitmapFrame").Invoke(session, [frame, DateTime.UtcNow.Ticks]);
+            Pump(window, 150);
             playbackSnapshots[stream.Id] = Method(sessionType, "CurrentPlaybackSnapshot").Invoke(session, []);
             Method(typeof(MainWindow), "UpdateTileChrome", BindingFlags.Instance | BindingFlags.NonPublic)
                 .Invoke(window, [stream, null]);
