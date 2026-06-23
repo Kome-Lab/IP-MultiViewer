@@ -1,5 +1,6 @@
 param(
-    [string]$OutputPath = "$([Environment]::GetFolderPath('Desktop'))\IPMultiViewer.Desktop.exe"
+    [string]$OutputPath = "$([Environment]::GetFolderPath('Desktop'))\IPMultiViewer.Desktop.exe",
+    [switch]$GpuRendering
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,7 +22,8 @@ dotnet publish $project `
     -p:IncludeAllContentForSelfExtract=true `
     -p:EnableCompressionInSingleFile=true `
     -p:DebugType=none `
-    -p:DebugSymbols=false
+    -p:DebugSymbols=false `
+    -p:EnableGpuRendering=$($GpuRendering.IsPresent.ToString().ToLowerInvariant())
 
 $sourceExe = Join-Path $publishDir "IPMultiViewer.Desktop.exe"
 if (-not (Test-Path -LiteralPath $sourceExe)) {

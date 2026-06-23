@@ -51,6 +51,7 @@ public partial class MainWindow : Window
         "audio.silence",
         "audio.clipping"
     ];
+    private static readonly HashSet<string> MonitoringAlertTypes = new(PendingIssueTypes.Concat(["video.decode_error"]), StringComparer.OrdinalIgnoreCase);
 
     internal static bool IsActiveAlertStatus(string status)
     {
@@ -73,6 +74,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, DateTimeOffset> _lastVideoPresentedAt = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<Border>> _tileStatusFrames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Border> _tileBorders = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TextBlock> _tileNameTextBlocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TextBlock> _tileStatusTextBlocks = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, StackPanel> _tileAlertStacks = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Grid> _tileSurfaceHosts = new(StringComparer.OrdinalIgnoreCase);
@@ -87,6 +89,8 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, string> _tileChromeRenderKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _tileStatusTextRenderKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _tileRenderedAlertKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<int, string> _tileIndexStreamIds = new();
+    private readonly Dictionary<string, int> _streamTileIndexes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, byte[]> _alertSoundWaves = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _immediateVideoAlertEvaluationSync = new();
     private readonly HashSet<string> _pendingImmediateVideoAlertEvaluations = new(StringComparer.OrdinalIgnoreCase);
@@ -108,6 +112,7 @@ public partial class MainWindow : Window
     private bool _layoutSelectionInProgress;
     private const double TileFrameThickness = 3;
     private const int LivePlaybackCacheMs = 100;
+    private const string GpuRenderingEnvironmentVariable = "IPMV_GPU_RENDERING";
     private static readonly TimeSpan PlaybackVideoFreshnessWarning = TimeSpan.FromSeconds(1);
     private static readonly JsonSerializerOptions ServerJsonOptions = new()
     {
@@ -226,8 +231,8 @@ public partial class MainWindow : Window
 
     internal static string[] LowLatencyVlcInstanceOptions()
     {
-        return
-        [
+        var options = new List<string>
+        {
             "--no-video-title-show",
             $"--network-caching={LivePlaybackCacheMs}",
             $"--live-caching={LivePlaybackCacheMs}",
@@ -236,7 +241,33 @@ public partial class MainWindow : Window
             "--skip-frames",
             "--clock-jitter=0",
             "--clock-synchro=0"
-        ];
+        };
+
+        if (GpuRenderingEnabled())
+        {
+            options.Add("--vout=direct3d11");
+            options.Add("--avcodec-hw=d3d11va");
+        }
+
+        return options.ToArray();
+    }
+
+    internal static bool GpuRenderingEnabled()
+    {
+#if IPMV_GPU_RENDERING
+        return true;
+#else
+        return IsTruthy(Environment.GetEnvironmentVariable(GpuRenderingEnvironmentVariable)) ||
+            IsTruthy(Environment.GetEnvironmentVariable("IPMULTIVIEWER_GPU_RENDERING"));
+#endif
+    }
+
+    private static bool IsTruthy(string? value)
+    {
+        return string.Equals(value, "1", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, "true", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(value, "on", StringComparison.OrdinalIgnoreCase);
     }
 
     internal static string[] LowLatencyVlcMediaOptions(bool disableAudio)
@@ -276,6 +307,7 @@ public partial class MainWindow : Window
         TileGrid.Children.Clear();
         _tileStatusFrames.Clear();
         _tileBorders.Clear();
+        _tileNameTextBlocks.Clear();
         _tileStatusTextBlocks.Clear();
         _tileAlertStacks.Clear();
         _tileSurfaceHosts.Clear();
@@ -290,6 +322,8 @@ public partial class MainWindow : Window
         _tileChromeRenderKeys.Clear();
         _tileStatusTextRenderKeys.Clear();
         _tileRenderedAlertKeys.Clear();
+        _tileIndexStreamIds.Clear();
+        _streamTileIndexes.Clear();
 
         var layout = _config.Layouts.FirstOrDefault(layout => layout.Id == _config.ActiveLayoutId)
             ?? _config.Layouts.FirstOrDefault();
@@ -323,6 +357,89 @@ public partial class MainWindow : Window
         {
             host.Children.Clear();
         }
+    }
+
+    private void RenderTilesAt(IEnumerable<int> tileIndexes)
+    {
+        var layout = ActiveLayout();
+        var size = GridSizeFor(layout?.Kind);
+        var tileCount = size * size;
+        if (TileGrid.Children.Count != tileCount ||
+            TileGrid.Rows != size ||
+            TileGrid.Columns != size)
+        {
+            RenderTiles();
+            return;
+        }
+
+        var indexes = tileIndexes
+            .Where(index => index >= 0 && index < tileCount)
+            .Distinct()
+            .OrderBy(index => index)
+            .ToList();
+        foreach (var index in indexes)
+        {
+            RemoveRenderedTileBindings(index);
+        }
+
+        var streamLookup = StreamLookup();
+        foreach (var index in indexes)
+        {
+            var tile = layout?.Tiles.FirstOrDefault(tile => tile.Index == index);
+            var stream = StreamForVisibleTile(tile, streamLookup);
+            var replacement = CreateTile(stream, index);
+            TileGrid.Children.RemoveAt(index);
+            TileGrid.Children.Insert(index, replacement);
+        }
+    }
+
+    private StreamConfig? StreamForVisibleTile(LayoutTileConfig? tile, IReadOnlyDictionary<string, StreamConfig> streamLookup)
+    {
+        if (string.IsNullOrWhiteSpace(tile?.StreamId))
+        {
+            return null;
+        }
+
+        return streamLookup.TryGetValue(tile.StreamId, out var stream) ? stream : null;
+    }
+
+    private void RemoveRenderedTileBindings(int tileIndex)
+    {
+        if (!_tileIndexStreamIds.Remove(tileIndex, out var streamId))
+        {
+            return;
+        }
+
+        _streamTileIndexes.Remove(streamId);
+        if (_tileVideoViews.Remove(streamId, out var view))
+        {
+            view.MediaPlayer = null;
+        }
+
+        if (_tileFfmpegImages.Remove(streamId, out var image))
+        {
+            image.Source = null;
+        }
+
+        if (_tileSurfaceHosts.Remove(streamId, out var host))
+        {
+            host.Children.Clear();
+        }
+
+        _tileStatusFrames.Remove(streamId);
+        _tileBorders.Remove(streamId);
+        _tileNameTextBlocks.Remove(streamId);
+        _tileStatusTextBlocks.Remove(streamId);
+        _tileAlertStacks.Remove(streamId);
+        _tileSurfaceRenderKeys.Remove(streamId);
+        _tileSurfacePlaceholders.Remove(streamId);
+        _tileAudioMeterHosts.Remove(streamId);
+        _tileAudioMeterViews.Remove(streamId);
+        _tileAudioMeterViewLookup.Remove(streamId);
+        _lastAudioMeterTargetRefreshAt.Remove(streamId);
+        _tileChromeRenderKeys.Remove(streamId);
+        _tileStatusTextRenderKeys.Remove(streamId);
+        _tileRenderedAlertKeys.Remove(streamId);
     }
 
     private StreamConfig? StreamForTile(
@@ -502,8 +619,11 @@ public partial class MainWindow : Window
 
         if (stream is not null)
         {
+            _tileIndexStreamIds[index] = stream.Id;
+            _streamTileIndexes[stream.Id] = index;
             _tileStatusFrames[stream.Id] = [statusStrip, leftFrame, rightFrame, bottomFrame];
             _tileBorders[stream.Id] = border;
+            _tileNameTextBlocks[stream.Id] = streamName;
             _tileStatusTextBlocks[stream.Id] = statusTextBlock;
             _tileAlertStacks[stream.Id] = alertStack;
             _tileSurfaceHosts[stream.Id] = surfaceHost;
@@ -624,6 +744,14 @@ public partial class MainWindow : Window
         if (!ReferenceEquals(statusText.Foreground, foreground))
         {
             statusText.Foreground = foreground;
+        }
+    }
+
+    private void UpdateTileTitle(StreamConfig stream)
+    {
+        if (_tileNameTextBlocks.TryGetValue(stream.Id, out var title))
+        {
+            SetTextIfChanged(title, stream.Name);
         }
     }
 
@@ -1706,7 +1834,11 @@ public partial class MainWindow : Window
         stream.AlertProfileId = (StreamAlertProfileCombo.SelectedItem as AlertProfileConfig)?.Id
             ?? _config.AlertProfiles.FirstOrDefault()?.Id
             ?? "default";
-        if (IsPlaybackLoaded(stream.Id))
+        if (!stream.Enabled)
+        {
+            StopStreamPlayback(stream.Id);
+        }
+        else if (IsPlaybackLoaded(stream.Id))
         {
             if (stream.AudioMonitorEnabled)
             {
@@ -1740,7 +1872,14 @@ public partial class MainWindow : Window
         LocalConfigStore.Save(_config);
         StreamsList.Items.Refresh();
         RenderAlerts();
-        RenderTiles();
+        if (IsStreamInActiveLayout(stream.Id))
+        {
+            UpdateTileTitle(stream);
+            RefreshPlaybackSurface(stream);
+            UpdateTileChrome(stream);
+        }
+
+        ReconcileActiveLayoutMonitoring();
         UpdateFooter($"Updated {stream.Name}.");
     }
 
@@ -1829,6 +1968,7 @@ public partial class MainWindow : Window
 
             LocalConfigStore.Save(_config);
             RenderTiles();
+            ReconcileActiveLayoutMonitoring();
             UpdatePlaybackSummary();
             UpdateFooter($"Layout changed to {layout.Name}.");
         }
@@ -2350,9 +2490,12 @@ public partial class MainWindow : Window
 
         var streams = new List<StreamConfig>(layout.Tiles.Count);
         var seenStreamIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var maxVisibleTiles = VisibleTileCountFor(layout);
         foreach (var tile in layout.Tiles)
         {
             if (string.IsNullOrWhiteSpace(tile.StreamId) ||
+                tile.Index < 0 ||
+                tile.Index >= maxVisibleTiles ||
                 !streamLookup.TryGetValue(tile.StreamId, out var stream) ||
                 !seenStreamIds.Add(stream.Id))
             {
@@ -2368,7 +2511,11 @@ public partial class MainWindow : Window
     private bool IsStreamInActiveLayout(string streamId)
     {
         var layout = ActiveLayout();
-        return layout?.Tiles.Any(tile => string.Equals(tile.StreamId, streamId, StringComparison.OrdinalIgnoreCase)) == true;
+        var maxVisibleTiles = VisibleTileCountFor(layout);
+        return layout?.Tiles.Any(tile =>
+            tile.Index >= 0 &&
+            tile.Index < maxVisibleTiles &&
+            string.Equals(tile.StreamId, streamId, StringComparison.OrdinalIgnoreCase)) == true;
     }
 
     private async System.Threading.Tasks.Task StartStreamPlaybackAsync(StreamConfig stream)
@@ -2629,6 +2776,70 @@ public partial class MainWindow : Window
         foreach (var streamId in streamIds)
         {
             StopStreamPlayback(streamId);
+        }
+    }
+
+    private void StopPlaybackOutsideActiveLayout(IReadOnlySet<string>? activeStreamIds = null)
+    {
+        activeStreamIds ??= ActiveMonitoredStreamIdSet();
+        var loadedStreamIds = _players.Keys
+            .Concat(_ffmpegPlaybackSessions.Keys)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(streamId => !activeStreamIds.Contains(streamId))
+            .ToList();
+        foreach (var streamId in loadedStreamIds)
+        {
+            StopStreamPlayback(streamId);
+        }
+    }
+
+    private HashSet<string> ActiveMonitoredStreamIdSet()
+    {
+        return ActiveLayoutStreams()
+            .Where(stream => stream.Enabled)
+            .Select(stream => stream.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private bool ResolveMonitoringAlertsOutsideActiveLayout(IReadOnlySet<string>? activeStreamIds = null)
+    {
+        activeStreamIds ??= ActiveMonitoredStreamIdSet();
+        var changed = false;
+        foreach (var alert in _config.AlertHistory.Where(alert =>
+            !activeStreamIds.Contains(alert.StreamId) &&
+            MonitoringAlertTypes.Contains(alert.Type) &&
+            ActiveAlertStatuses.Contains(alert.Status)))
+        {
+            alert.Status = "resolved";
+            alert.SnoozedUntil = null;
+            alert.UpdatedAt = DateTimeOffset.UtcNow;
+            alert.SyncedAt = null;
+            alert.SourceClientId = _config.ClientId;
+            changed = true;
+        }
+
+        foreach (var key in _issueSince.Keys.ToList())
+        {
+            var separator = key.IndexOf(':');
+            var streamId = separator < 0 ? key : key[..separator];
+            if (!activeStreamIds.Contains(streamId))
+            {
+                _issueSince.Remove(key);
+            }
+        }
+
+        return changed;
+    }
+
+    private void ReconcileActiveLayoutMonitoring()
+    {
+        var monitoredStreamIds = ActiveMonitoredStreamIdSet();
+        StopPlaybackOutsideActiveLayout(monitoredStreamIds);
+        if (ResolveMonitoringAlertsOutsideActiveLayout(monitoredStreamIds))
+        {
+            LocalConfigStore.Save(_config);
+            RenderAlerts();
+            UpdateAllTileChrome();
         }
     }
 
@@ -3125,12 +3336,31 @@ public partial class MainWindow : Window
         targetTile.StreamId = streamId;
     }
 
+    private HashSet<int> AffectedTileIndexesForAssignment(int tileIndex, string streamId)
+    {
+        var affected = new HashSet<int> { tileIndex };
+        var layout = ActiveLayout();
+        if (layout is null || string.IsNullOrWhiteSpace(streamId))
+        {
+            return affected;
+        }
+
+        var sourceTile = layout.Tiles.FirstOrDefault(tile => string.Equals(tile.StreamId, streamId, StringComparison.OrdinalIgnoreCase));
+        if (sourceTile is not null)
+        {
+            affected.Add(sourceTile.Index);
+        }
+
+        return affected;
+    }
+
     private void AssignTileToStream(int tileIndex, string streamId)
     {
+        var affectedTileIndexes = AffectedTileIndexesForAssignment(tileIndex, streamId);
         AssignStreamToTile(streamId, tileIndex);
         LocalConfigStore.Save(_config);
-        RenderTiles();
-        RefreshPlaybackSurfaces();
+        RenderTilesAt(affectedTileIndexes);
+        ReconcileActiveLayoutMonitoring();
         UpdatePlaybackSummary();
         UpdateFooter(string.IsNullOrWhiteSpace(streamId)
             ? $"Tile {tileIndex + 1} unassigned."
@@ -3159,6 +3389,12 @@ public partial class MainWindow : Window
             "4x4" => 4,
             _ => 2
         };
+    }
+
+    private static int VisibleTileCountFor(LayoutConfig? layout)
+    {
+        var size = GridSizeFor(layout?.Kind);
+        return size * size;
     }
 
     private string StatusColorFor(StreamConfig? stream, AlertRecord? alert, bool isLoaded, PlaybackSnapshot? snapshot)
@@ -4257,6 +4493,7 @@ public partial class MainWindow : Window
                 ?? _config.Streams.FirstOrDefault();
             RenderAlerts();
             RenderTiles();
+            ReconcileActiveLayoutMonitoring();
             UpdatePlaybackSummary();
         }
         finally

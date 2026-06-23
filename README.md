@@ -17,6 +17,7 @@ Windows Desktop App を主役にした汎用 IP stream MultiViewer です。Auto
 - Main window は監視画面専用です。Settings と Alert History は別 window で開きます。
 - MV タイルは映像面積を優先し、常時表示は短い stream 名、状態 badge、上部 alert overlay に絞ります。
 - stream のタイル割当は MV タイル上の `Assign` / `Change` から行います。
+- 監視対象は現在の layout で表示されている tile の stream だけです。4x4 から 3x3 へ切り替えて表示外になった stream は receiver と検知対象から外します。
 - Playback を開始していない tile は `OK` ではなく `standby / playback stopped` と表示します。
 - 手動 Stop、未再生、standalone idle では `video.no_signal` を出しません。
 - `video.decode_error` と `video.no_signal` は別 alert です。decode error だけで no-signal timer は進めません。
@@ -55,6 +56,12 @@ single-file 成果物を Desktop に出す場合:
 powershell -ExecutionPolicy Bypass -File apps/desktop-windows/publish-single-file.ps1
 ```
 
+GPU 描画向けの local single-file 成果物を出す場合:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File apps/desktop-windows/publish-single-file.ps1 -GpuRendering -OutputPath "$env:USERPROFILE\Desktop\IPMultiViewer.Desktop.GPU.exe"
+```
+
 Server / Agent の配布パッケージを作る場合:
 
 ```powershell
@@ -63,9 +70,11 @@ powershell -ExecutionPolicy Bypass -File scripts/package-server.ps1 -Version v0.
 
 タグ `v*` または GitHub Actions の手動実行では `.github/workflows/release-server.yml` が `ip-multiviewer_<version>_server_linux_x64.zip` と `ip-multiviewer_<version>_server_linux_arm64.zip`、それぞれの `.sha256` を作成します。パッケージには `ip-multiviewer-server`、`ip-multiviewer-agent`、`systemd/*.service.example`、`deploy/*.env.example`、`.env.example`、`docker-compose.prod.yml` が含まれます。
 
+Windows desktop release は `.github/workflows/release-windows.yml` が通常版 `ip-multiviewer_<version>_windows_x64.zip` と GPU 描画向け `ip-multiviewer_<version>_windows_x64_gpu.zip` を作成します。GPU 版は `EnableGpuRendering=true` で publish し、LibVLC の Direct3D11 video output と D3D11VA hardware decode を有効化します。
+
 ## Windows icon and signing
 
-- App icon は `apps/desktop-windows/Assets/AppIcon.ico` です。
+- App icon は `apps/desktop-windows/Assets/AppIcon.ico` です。Window icon にも同じ icon を指定し、タスクバー表示もこの icon に揃えます。
 - Assembly metadata は `Jumala9163, Kome-Lab` を authors / copyright に設定しています。
 - Authenticode 署名には実証明書が必要です。開発用 self-signed 証明書は `apps/desktop-windows/signing/create-dev-cert.ps1` で作成できます。
 - 発行後の exe 署名は `apps/desktop-windows/signing/sign-file.ps1`、または `dotnet publish -p:SignOutput=true -p:SignToolPath=<signtool.exe>` を使います。

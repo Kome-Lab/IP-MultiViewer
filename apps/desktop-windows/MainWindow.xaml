@@ -6,6 +6,7 @@
         Height="840"
         MinWidth="1180"
         MinHeight="680"
+        Icon="Assets/AppIcon.ico"
         Background="#090d14"
         FontFamily="Segoe UI Variable Text, Segoe UI">
   <Window.Resources>

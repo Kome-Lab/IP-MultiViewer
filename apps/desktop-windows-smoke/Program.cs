@@ -36,9 +36,11 @@ internal static class Program
             window.Show();
             Pump(window, 500);
 
+            AssertWindowIconIsSet(window);
             AssertLayoutSwitchDoesNotCrash(window);
             AssertNoStandaloneAnalysisMonitor(window);
             AssertActiveLayoutStreamsAreConcreteAndUnique(window);
+            AssertVisibleLayoutOnlyMonitored(window);
             AssertActiveAlertsByStreamIsExhaustive(window);
             AssertTextSetHelperSkipsUnchangedText();
             AssertSrtCandidateModes();
@@ -48,6 +50,7 @@ internal static class Program
             AssertFfmpegSnapshotSampling();
             AssertFfmpegAudioStatsParser();
             AssertTileFreshnessTextDoesNotRepaintChrome(window);
+            AssertTileAssignOnlyRendersAffectedTiles(window);
             (sessionA, sessionB) = AssertTwoFfmpegSessionsCanRun();
 
             window.Close();
@@ -64,6 +67,14 @@ internal static class Program
         {
             DisposeReflective(sessionA);
             DisposeReflective(sessionB);
+        }
+    }
+
+    private static void AssertWindowIconIsSet(MainWindow window)
+    {
+        if (window.Icon is null)
+        {
+            throw new InvalidOperationException("Main window icon must be set so the taskbar uses the IPMV icon.");
         }
     }
 
@@ -106,6 +117,77 @@ internal static class Program
         if (tileGrid.Children.Count != expectedTiles)
         {
             throw new InvalidOperationException($"Layout {kind} rendered {tileGrid.Children.Count} tiles instead of {expectedTiles}.");
+        }
+    }
+
+    private static void AssertVisibleLayoutOnlyMonitored(MainWindow window)
+    {
+        var config = (LocalConfig)Field(window, "_config").GetValue(window)!;
+        var originalActiveLayoutId = config.ActiveLayoutId;
+        var hiddenStream = new StreamConfig
+        {
+            Id = "smoke-hidden-outside-layout",
+            Name = "Smoke hidden outside layout",
+            Enabled = true,
+            InputUrl = "rtsp://example.test/hidden",
+            InputProtocol = "rtsp",
+            AnalysisEnabled = true,
+            AudioMonitorEnabled = true
+        };
+        LayoutConfig? layout = null;
+        LayoutTileConfig? hiddenTile = null;
+        AlertRecord? hiddenAlert = null;
+        var issueSince = (IDictionary)Field(window, "_issueSince").GetValue(window)!;
+        try
+        {
+            config.Streams.Add(hiddenStream);
+            layout = config.Layouts.First(item => string.Equals(item.Kind, "3x3", StringComparison.OrdinalIgnoreCase));
+            hiddenTile = new LayoutTileConfig { Index = 9, StreamId = hiddenStream.Id, Row = 3, Column = 0 };
+            layout.Tiles.Add(hiddenTile);
+            config.ActiveLayoutId = layout.Id;
+
+            var activeStreams = ((IEnumerable)MethodWithParameterCount(typeof(MainWindow), "ActiveLayoutStreams", 0)
+                .Invoke(window, [])!).Cast<StreamConfig>().ToList();
+            if (activeStreams.Any(stream => string.Equals(stream.Id, hiddenStream.Id, StringComparison.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException("A stream assigned outside the visible 3x3 tile range was still treated as monitored.");
+            }
+
+            hiddenAlert = new AlertRecord
+            {
+                Id = "smoke-hidden-alert",
+                StreamId = hiddenStream.Id,
+                Type = "video.black",
+                Severity = "error",
+                Status = "open",
+                Message = "hidden"
+            };
+            config.AlertHistory.Add(hiddenAlert);
+            issueSince[$"{hiddenStream.Id}:video.black"] = DateTimeOffset.UtcNow.AddSeconds(-10);
+            var changed = (bool)Method(typeof(MainWindow), "ResolveMonitoringAlertsOutsideActiveLayout", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, [null])!;
+            if (!changed ||
+                hiddenAlert.Status != "resolved" ||
+                issueSince.Contains($"{hiddenStream.Id}:video.black"))
+            {
+                throw new InvalidOperationException("Monitoring state outside the visible layout was not resolved.");
+            }
+        }
+        finally
+        {
+            config.ActiveLayoutId = originalActiveLayoutId;
+            config.Streams.Remove(hiddenStream);
+            if (layout is not null && hiddenTile is not null)
+            {
+                layout.Tiles.Remove(hiddenTile);
+            }
+
+            if (hiddenAlert is not null)
+            {
+                config.AlertHistory.Remove(hiddenAlert);
+            }
+
+            issueSince.Remove($"{hiddenStream.Id}:video.black");
         }
     }
 
@@ -251,6 +333,23 @@ internal static class Program
             !ContainsArgumentPair(args, "-flags", "low_delay"))
         {
             throw new InvalidOperationException("FFmpeg input arguments must keep low-latency probe and buffer settings.");
+        }
+
+        var previousGpuEnv = Environment.GetEnvironmentVariable("IPMV_GPU_RENDERING");
+        try
+        {
+            Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", "1");
+            var gpuInstanceOptions = ((IEnumerable<string>)Method(typeof(MainWindow), "LowLatencyVlcInstanceOptions", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
+                .Invoke(null, [])!).ToList();
+            if (!gpuInstanceOptions.Contains("--vout=direct3d11", StringComparer.OrdinalIgnoreCase) ||
+                !gpuInstanceOptions.Contains("--avcodec-hw=d3d11va", StringComparer.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException("GPU rendering mode must enable Direct3D11 video output and D3D11VA hardware decode.");
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", previousGpuEnv);
         }
     }
 
@@ -700,6 +799,7 @@ internal static class Program
             var statusKeyBefore = (string?)statusKeys[stream.Id]
                 ?? throw new InvalidOperationException("Tile status text key was not recorded.");
 
+            Method(sessionType, "QueueBitmapFrame").Invoke(session, [frame, DateTime.UtcNow.Ticks]);
             Pump(window, 300);
             playbackSnapshots[stream.Id] = Method(sessionType, "CurrentPlaybackSnapshot").Invoke(session, []);
             Method(typeof(MainWindow), "UpdateTileChrome", BindingFlags.Instance | BindingFlags.NonPublic)
@@ -732,6 +832,62 @@ internal static class Program
             var ffmpegSessions = (IDictionary)Field(window, "_ffmpegPlaybackSessions").GetValue(window)!;
             ffmpegSessions.Remove(stream.Id);
             DisposeReflective(session);
+        }
+    }
+
+    private static void AssertTileAssignOnlyRendersAffectedTiles(MainWindow window)
+    {
+        var config = (LocalConfig)Field(window, "_config").GetValue(window)!;
+        var originalActiveLayoutId = config.ActiveLayoutId;
+        var streamA = new StreamConfig { Id = "smoke-assign-a", Name = "Smoke assign A", Enabled = true, InputUrl = "rtsp://example.test/a", InputProtocol = "rtsp" };
+        var streamB = new StreamConfig { Id = "smoke-assign-b", Name = "Smoke assign B", Enabled = true, InputUrl = "rtsp://example.test/b", InputProtocol = "rtsp" };
+        var streamC = new StreamConfig { Id = "smoke-assign-c", Name = "Smoke assign C", Enabled = true, InputUrl = "rtsp://example.test/c", InputProtocol = "rtsp" };
+        var layout = new LayoutConfig
+        {
+            Id = "smoke-assign-layout",
+            Name = "Smoke assign layout",
+            Kind = "2x2",
+            Tiles =
+            [
+                new LayoutTileConfig { Index = 0, StreamId = streamA.Id, Row = 0, Column = 0 },
+                new LayoutTileConfig { Index = 1, StreamId = streamB.Id, Row = 0, Column = 1 },
+                new LayoutTileConfig { Index = 2, StreamId = streamC.Id, Row = 1, Column = 0 },
+                new LayoutTileConfig { Index = 3, StreamId = "", Row = 1, Column = 1 }
+            ]
+        };
+
+        try
+        {
+            config.Streams.Add(streamA);
+            config.Streams.Add(streamB);
+            config.Streams.Add(streamC);
+            config.Layouts.Add(layout);
+            config.ActiveLayoutId = layout.Id;
+            Method(typeof(MainWindow), "RenderTiles", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, []);
+            Pump(window, 200);
+
+            var chromeKeys = (IDictionary)Field(window, "_tileChromeRenderKeys").GetValue(window)!;
+            chromeKeys[streamC.Id] = "unchanged-unaffected-tile";
+            Method(typeof(MainWindow), "AssignStreamToTile", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, [streamA.Id, 1]);
+            Method(typeof(MainWindow), "RenderTilesAt", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, [new[] { 0, 1 }]);
+
+            if (!string.Equals((string?)chromeKeys[streamC.Id], "unchanged-unaffected-tile", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Assigning one tile repainted an unaffected monitoring tile.");
+            }
+        }
+        finally
+        {
+            config.ActiveLayoutId = originalActiveLayoutId;
+            config.Layouts.Remove(layout);
+            config.Streams.Remove(streamA);
+            config.Streams.Remove(streamB);
+            config.Streams.Remove(streamC);
+            Method(typeof(MainWindow), "RenderTiles", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, []);
         }
     }
 

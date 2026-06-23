@@ -16,8 +16,20 @@ permissions:
 
 jobs:
   release-windows:
-    name: Build Windows x64 executable
+    name: Build Windows x64 executable (${{ matrix.flavor }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - flavor: standard
+            package_suffix: ""
+            exe_suffix: ""
+            enable_gpu_rendering: "false"
+          - flavor: gpu
+            package_suffix: "_gpu"
+            exe_suffix: "-GPU"
+            enable_gpu_rendering: "true"
     steps:
       - uses: actions/checkout@v7
 
@@ -38,8 +50,8 @@ jobs:
           if ($version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$') {
             throw "Version must look like v1.2.3; got $version"
           }
-          $packageName = "ip-multiviewer_${version}_windows_x64"
-          $exeName = "IPMultiViewer-${version}-Desktop.exe"
+          $packageName = "ip-multiviewer_${version}_windows_x64${{ matrix.package_suffix }}"
+          $exeName = "IPMultiViewer-${version}-Desktop${{ matrix.exe_suffix }}.exe"
           "version=$version" >> $env:GITHUB_OUTPUT
           "package_name=$packageName" >> $env:GITHUB_OUTPUT
           "exe_name=$exeName" >> $env:GITHUB_OUTPUT
@@ -57,16 +69,17 @@ jobs:
             -c Release `
             -r win-x64 `
             --self-contained true `
-            -o publish/windows-x64 `
+            -o publish/windows-x64-${{ matrix.flavor }} `
             -p:PublishSingleFile=true `
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -p:IncludeAllContentForSelfExtract=true `
             -p:EnableCompressionInSingleFile=true `
             -p:DebugType=none `
             -p:DebugSymbols=false `
+            -p:EnableGpuRendering=${{ matrix.enable_gpu_rendering }} `
             -p:Version=${{ steps.meta.outputs.assembly_version }}
 
-          $exe = "publish/windows-x64/IPMultiViewer.Desktop.exe"
+          $exe = "publish/windows-x64-${{ matrix.flavor }}/IPMultiViewer.Desktop.exe"
           if (-not (Test-Path -LiteralPath $exe)) {
             throw "Publish did not produce expected executable: $exe"
           }
@@ -79,7 +92,7 @@ jobs:
           $staging = Join-Path "staging" $packageName
           $artifacts = "artifacts"
           New-Item -ItemType Directory -Force -Path $staging, $artifacts | Out-Null
-          Copy-Item -LiteralPath "publish/windows-x64/IPMultiViewer.Desktop.exe" -Destination (Join-Path $staging "${{ steps.meta.outputs.exe_name }}") -Force
+          Copy-Item -LiteralPath "publish/windows-x64-${{ matrix.flavor }}/IPMultiViewer.Desktop.exe" -Destination (Join-Path $staging "${{ steps.meta.outputs.exe_name }}") -Force
 
           $zip = Join-Path $artifacts "$packageName.zip"
           if (Test-Path -LiteralPath $zip) {

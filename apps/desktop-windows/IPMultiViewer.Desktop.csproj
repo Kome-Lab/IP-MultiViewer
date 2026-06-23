@@ -12,6 +12,8 @@
     <SignOutput>false</SignOutput>
     <CodeSigningSubject>Jumala9163, Kome-Lab</CodeSigningSubject>
     <SignTimestampUrl>http://timestamp.digicert.com</SignTimestampUrl>
+    <EnableGpuRendering>false</EnableGpuRendering>
+    <DefineConstants Condition="'$(EnableGpuRendering)' == 'true'">$(DefineConstants);IPMV_GPU_RENDERING</DefineConstants>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
