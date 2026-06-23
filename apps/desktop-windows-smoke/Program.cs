@@ -45,9 +45,11 @@ internal static class Program
             AssertTextSetHelperSkipsUnchangedText();
             AssertSrtCandidateModes();
             AssertLowLatencyPlaybackOptions();
+            AssertGpuRenderingUsesLibVlcPlayback(window);
             AssertPlaybackStatusWaitsForPresentedVideo(window);
             AssertAudioMeterSidePanels(window);
             AssertFfmpegSnapshotSampling();
+            AssertFfmpegSidecarAnalysisSnapshotSampling();
             AssertFfmpegAudioStatsParser();
             AssertTileFreshnessTextDoesNotRepaintChrome(window);
             AssertTileAssignOnlyRendersAffectedTiles(window);
@@ -193,29 +195,41 @@ internal static class Program
 
     private static void AssertNoStandaloneAnalysisMonitor(MainWindow window)
     {
-        var stream = new StreamConfig
+        var previousGpuEnv = Environment.GetEnvironmentVariable("IPMV_GPU_RENDERING");
+        var previousGpuLongEnv = Environment.GetEnvironmentVariable("IPMULTIVIEWER_GPU_RENDERING");
+        try
         {
-            Id = "smoke-analysis",
-            Name = "Smoke analysis",
-            Enabled = true,
-            InputUrl = "rtsp://example.test/live",
-            InputProtocol = "rtsp",
-            AnalysisEnabled = true,
-            AudioMonitorEnabled = true
-        };
-        var monitors = (IDictionary)Field(window, "_videoMonitors").GetValue(window)!;
-        var before = monitors.Count;
-        Method(window.GetType(), "StartVideoMonitor").Invoke(window, [stream]);
-        Pump(window, 300);
-        if (monitors.Count != before)
-        {
-            throw new InvalidOperationException("StartVideoMonitor created a standalone source connection.");
-        }
+            Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", null);
+            Environment.SetEnvironmentVariable("IPMULTIVIEWER_GPU_RENDERING", null);
+            var stream = new StreamConfig
+            {
+                Id = "smoke-analysis",
+                Name = "Smoke analysis",
+                Enabled = true,
+                InputUrl = "rtsp://example.test/live",
+                InputProtocol = "rtsp",
+                AnalysisEnabled = true,
+                AudioMonitorEnabled = true
+            };
+            var monitors = (IDictionary)Field(window, "_videoMonitors").GetValue(window)!;
+            var before = monitors.Count;
+            Method(window.GetType(), "StartVideoMonitor").Invoke(window, [stream]);
+            Pump(window, 300);
+            if (monitors.Count != before)
+            {
+                throw new InvalidOperationException("StartVideoMonitor created a standalone source connection.");
+            }
 
-        var shouldUse = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [stream])!;
-        if (!shouldUse)
+            var shouldUse = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [stream])!;
+            if (!shouldUse)
+            {
+                throw new InvalidOperationException("Analysis-enabled streams must route through shared FFmpeg playback in standard rendering mode.");
+            }
+        }
+        finally
         {
-            throw new InvalidOperationException("Analysis-enabled streams must route through shared FFmpeg playback.");
+            Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", previousGpuEnv);
+            Environment.SetEnvironmentVariable("IPMULTIVIEWER_GPU_RENDERING", previousGpuLongEnv);
         }
     }
 
@@ -350,6 +364,56 @@ internal static class Program
         finally
         {
             Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", previousGpuEnv);
+        }
+    }
+
+    private static void AssertGpuRenderingUsesLibVlcPlayback(MainWindow window)
+    {
+        var previousGpuEnv = Environment.GetEnvironmentVariable("IPMV_GPU_RENDERING");
+        var previousForceEnv = Environment.GetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK");
+        try
+        {
+            Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", "1");
+            Environment.SetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK", null);
+            var rtspAnalysisStream = new StreamConfig
+            {
+                Id = "smoke-gpu-rtsp",
+                Name = "Smoke GPU RTSP",
+                Enabled = true,
+                InputUrl = "rtsp://example.test/live",
+                InputProtocol = "rtsp",
+                AnalysisEnabled = true,
+                AudioMonitorEnabled = true
+            };
+            var shouldUseFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [rtspAnalysisStream])!;
+            if (shouldUseFfmpeg)
+            {
+                throw new InvalidOperationException("GPU rendering mode must keep analysis-enabled RTSP streams on LibVLC playback instead of FFmpeg bitmap playback.");
+            }
+
+            if (FindOnPath("ffmpeg.exe") is not null || FindOnPath("ffmpeg") is not null)
+            {
+                var srtStream = new StreamConfig
+                {
+                    Id = "smoke-gpu-srt",
+                    Name = "Smoke GPU SRT",
+                    Enabled = true,
+                    InputUrl = "srt://127.0.0.1:12000",
+                    InputProtocol = "srt",
+                    AnalysisEnabled = true,
+                    AudioMonitorEnabled = true
+                };
+                var srtUsesFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [srtStream])!;
+                if (!srtUsesFfmpeg)
+                {
+                    throw new InvalidOperationException("SRT streams should still use the FFmpeg playback fallback.");
+                }
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", previousGpuEnv);
+            Environment.SetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK", previousForceEnv);
         }
     }
 
@@ -694,6 +758,57 @@ internal static class Program
         finally
         {
             DisposeReflective(session);
+        }
+    }
+
+    private static void AssertFfmpegSidecarAnalysisSnapshotSampling()
+    {
+        var monitorType = DesktopType("FfmpegVideoAnalysisMonitor");
+        var blackCallbacks = 0;
+        var monitor = Activator.CreateInstance(
+            monitorType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args:
+            [
+                "ffmpeg",
+                "file:///not-started",
+                "file",
+                0.04,
+                0.015,
+                0.04,
+                0.85,
+                (Action)(() => blackCallbacks++)
+            ],
+            culture: null) ?? throw new InvalidOperationException("Failed to create FFmpeg sidecar analysis monitor.");
+        try
+        {
+            var frameBytes = (int)(monitorType.GetField("FrameBytes", BindingFlags.Static | BindingFlags.NonPublic)!
+                .GetRawConstantValue() ?? throw new InvalidOperationException("FrameBytes constant was unavailable."));
+            var frame = new byte[frameBytes];
+            Method(monitorType, "UpdateSnapshot").Invoke(monitor, [frame]);
+            if (blackCallbacks != 1)
+            {
+                throw new InvalidOperationException($"Sidecar black frame callback count = {blackCallbacks}, want 1.");
+            }
+
+            var tryGetSnapshot = Method(monitorType, "TryGetSnapshot");
+            var args = new object?[] { null };
+            if ((bool)tryGetSnapshot.Invoke(monitor, args)! != true || args[0] is null)
+            {
+                throw new InvalidOperationException("FFmpeg sidecar monitor did not expose a sampled black snapshot.");
+            }
+
+            Array.Fill(frame, (byte)255);
+            Method(monitorType, "UpdateSnapshot").Invoke(monitor, [frame]);
+            if (blackCallbacks != 1)
+            {
+                throw new InvalidOperationException("FFmpeg sidecar monitor fired black callback for a white frame.");
+            }
+        }
+        finally
+        {
+            DisposeReflective(monitor);
         }
     }
 

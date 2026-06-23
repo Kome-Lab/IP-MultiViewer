@@ -113,6 +113,7 @@ public partial class MainWindow : Window
     private const double TileFrameThickness = 3;
     private const int LivePlaybackCacheMs = 100;
     private const string GpuRenderingEnvironmentVariable = "IPMV_GPU_RENDERING";
+    private const string ForceFfmpegPlaybackEnvironmentVariable = "IPMV_FORCE_FFMPEG_PLAYBACK";
     private static readonly TimeSpan PlaybackVideoFreshnessWarning = TimeSpan.FromSeconds(1);
     private static readonly JsonSerializerOptions ServerJsonOptions = new()
     {
@@ -226,6 +227,9 @@ public partial class MainWindow : Window
 
         Core.Initialize();
         _libVlc = new LibVLC(LowLatencyVlcInstanceOptions());
+        AppendDesktopLog(GpuRenderingEnabled()
+            ? "LibVLC initialized for GPU rendering: vout=direct3d11, avcodec-hw=d3d11va."
+            : "LibVLC initialized for standard rendering.");
         return _libVlc;
     }
 
@@ -260,6 +264,12 @@ public partial class MainWindow : Window
         return IsTruthy(Environment.GetEnvironmentVariable(GpuRenderingEnvironmentVariable)) ||
             IsTruthy(Environment.GetEnvironmentVariable("IPMULTIVIEWER_GPU_RENDERING"));
 #endif
+    }
+
+    internal static bool ForceFfmpegPlaybackEnabled()
+    {
+        return IsTruthy(Environment.GetEnvironmentVariable(ForceFfmpegPlaybackEnvironmentVariable)) ||
+            IsTruthy(Environment.GetEnvironmentVariable("IPMULTIVIEWER_FORCE_FFMPEG_PLAYBACK"));
     }
 
     private static bool IsTruthy(string? value)
@@ -2550,8 +2560,17 @@ public partial class MainWindow : Window
             return false;
         }
 
-        return stream.AnalysisEnabled ||
-            stream.InputProtocol.StartsWith("srt", StringComparison.OrdinalIgnoreCase) ||
+        if (ForceFfmpegPlaybackEnabled() || RequiresFfmpegPlayback(stream))
+        {
+            return true;
+        }
+
+        return stream.AnalysisEnabled && !GpuRenderingEnabled();
+    }
+
+    private static bool RequiresFfmpegPlayback(StreamConfig stream)
+    {
+        return stream.InputProtocol.StartsWith("srt", StringComparison.OrdinalIgnoreCase) ||
             stream.InputUrl.StartsWith("srt://", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -2894,6 +2913,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (TryStartSidecarVideoAnalysisMonitor(stream))
+        {
+            return;
+        }
+
         if (_videoMonitors.ContainsKey(stream.Id) || !CanPlayStream(stream))
         {
             return;
@@ -2910,6 +2934,11 @@ public partial class MainWindow : Window
         }
 
         if (QueueSharedAnalysisPlaybackRestart(stream))
+        {
+            return;
+        }
+
+        if (TryStartSidecarVideoAnalysisMonitor(stream))
         {
             return;
         }
@@ -2952,6 +2981,47 @@ public partial class MainWindow : Window
         _videoMonitors[stream.Id] = session;
         AppendDesktopLog($"Video analysis monitor reused playback session for {stream.Id}.");
         return true;
+    }
+
+    private bool TryStartSidecarVideoAnalysisMonitor(StreamConfig stream)
+    {
+        if (!GpuRenderingEnabled() ||
+            !stream.AnalysisEnabled ||
+            _videoMonitors.ContainsKey(stream.Id) ||
+            !CanPlayStream(stream))
+        {
+            return false;
+        }
+
+        var ffmpeg = FindFfmpeg();
+        if (string.IsNullOrWhiteSpace(ffmpeg))
+        {
+            return false;
+        }
+
+        var profile = AlertProfileFor(stream);
+        var monitor = new FfmpegVideoAnalysisMonitor(
+            ffmpeg,
+            stream.InputUrl,
+            stream.InputProtocol,
+            profile.BlackPixelThreshold,
+            profile.FreezeDifferenceThreshold,
+            profile.BlackThreshold,
+            profile.BlackPixelRatioThreshold,
+            () => QueueImmediateVideoAlertEvaluation(stream.Id));
+        try
+        {
+            monitor.Start();
+            _videoMonitors[stream.Id] = monitor;
+            AppendDesktopLog($"GPU rendering sidecar analysis monitor started for {stream.Id}: playback remains LibVLC Direct3D11.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            monitor.Dispose();
+            AppendDesktopLog($"GPU rendering sidecar analysis monitor failed for {stream.Id}: {MaskStreamUrl(ex.Message)}");
+            return false;
+        }
     }
 
     private bool QueueSharedAnalysisPlaybackRestart(StreamConfig stream)
@@ -3048,7 +3118,10 @@ public partial class MainWindow : Window
         var videoFreshness = maxVideoAgeMs >= 0
             ? $" / video age max {maxVideoAgeMs:0}ms"
             : "";
-        SetTextIfChanged(PlaybackSummaryText, $"{active} active / {_players.Count + _ffmpegPlaybackSessions.Count} loaded / {layoutStreams.Count} layout streams / {errors} errors{videoFreshness}");
+        var renderBackend = GpuRenderingEnabled()
+            ? $" / render gpu d3d11: {_players.Count} vlc, {_ffmpegPlaybackSessions.Count} ffmpeg"
+            : $" / render standard: {_players.Count} vlc, {_ffmpegPlaybackSessions.Count} ffmpeg";
+        SetTextIfChanged(PlaybackSummaryText, $"{active} active / {_players.Count + _ffmpegPlaybackSessions.Count} loaded / {layoutStreams.Count} layout streams / {errors} errors{videoFreshness}{renderBackend}");
     }
 
     private double TryGetVideoFreshnessMs(string streamId)
@@ -6011,8 +6084,9 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
     }
 }
 
-internal sealed class FfmpegVideoAnalysisMonitor : IVideoAnalysisMonitor
+internal sealed class FfmpegVideoAnalysisMonitor : IVideoAnalysisMonitor, IImmediateBlackFrameMonitor
 {
+    private const int AnalysisFps = 10;
     private const int Width = 160;
     private const int Height = 90;
     private const int BytesPerPixel = 3;
@@ -6021,6 +6095,7 @@ internal sealed class FfmpegVideoAnalysisMonitor : IVideoAnalysisMonitor
     private readonly string _ffmpegPath;
     private readonly string _inputUrl;
     private readonly string _protocol;
+    private readonly Action _blackFrameDetected;
     private readonly object _sync = new();
     private readonly byte[] _previousBuffer = new byte[FrameBytes];
     private Process? _process;
@@ -6032,13 +6107,24 @@ internal sealed class FfmpegVideoAnalysisMonitor : IVideoAnalysisMonitor
     private string _lastError = "";
     private bool _disposed;
 
-    public FfmpegVideoAnalysisMonitor(string ffmpegPath, string inputUrl, string protocol, double darkPixelThreshold, double stabilityDifferenceThreshold)
+    public FfmpegVideoAnalysisMonitor(
+        string ffmpegPath,
+        string inputUrl,
+        string protocol,
+        double darkPixelThreshold,
+        double stabilityDifferenceThreshold,
+        double blackLumaThreshold = 0.04,
+        double blackPixelRatioThreshold = 0.85,
+        Action? blackFrameDetected = null)
     {
         _ffmpegPath = ffmpegPath;
         _inputUrl = inputUrl;
         _protocol = protocol;
+        _blackFrameDetected = blackFrameDetected ?? (() => { });
         DarkPixelThreshold = Math.Clamp(darkPixelThreshold, 0.0, 1.0);
         StabilityDifferenceThreshold = Math.Clamp(stabilityDifferenceThreshold, 0.0, 1.0);
+        BlackLumaThreshold = Math.Clamp(blackLumaThreshold, 0.0, 1.0);
+        BlackPixelRatioThreshold = Math.Clamp(blackPixelRatioThreshold, 0.0, 1.0);
     }
 
     public string Kind => "ffmpeg";
@@ -6050,6 +6136,10 @@ internal sealed class FfmpegVideoAnalysisMonitor : IVideoAnalysisMonitor
     public double DarkPixelThreshold { get; set; }
 
     public double StabilityDifferenceThreshold { get; set; }
+
+    public double BlackLumaThreshold { get; set; }
+
+    public double BlackPixelRatioThreshold { get; set; }
 
     public void Start()
     {
@@ -6082,7 +6172,7 @@ internal sealed class FfmpegVideoAnalysisMonitor : IVideoAnalysisMonitor
         startInfo.ArgumentList.Add(_inputUrl);
         startInfo.ArgumentList.Add("-an");
         startInfo.ArgumentList.Add("-vf");
-        startInfo.ArgumentList.Add($"fps=2,scale={Width}:{Height},format=rgb24");
+        startInfo.ArgumentList.Add($"fps={AnalysisFps},scale={Width}:{Height},format=rgb24");
         startInfo.ArgumentList.Add("-f");
         startInfo.ArgumentList.Add("rawvideo");
         startInfo.ArgumentList.Add("pipe:1");
@@ -6198,14 +6288,21 @@ internal sealed class FfmpegVideoAnalysisMonitor : IVideoAnalysisMonitor
         _stableFrames = difference <= StabilityDifferenceThreshold ? _stableFrames + 1 : 0;
         Buffer.BlockCopy(frame, 0, _previousBuffer, 0, frame.Length);
         _hasPreviousFrame = true;
+        VideoLumaSnapshot snapshot;
         lock (_sync)
         {
-            _snapshot = new VideoLumaSnapshot(
+            snapshot = new VideoLumaSnapshot(
                 total / pixelCount / 255,
                 darkPixels / (double)pixelCount,
                 difference,
                 _stableFrames,
                 DateTimeOffset.UtcNow);
+            _snapshot = snapshot;
+        }
+
+        if (snapshot.Luma <= BlackLumaThreshold && snapshot.DarkRatio >= BlackPixelRatioThreshold)
+        {
+            _blackFrameDetected();
         }
     }
 
