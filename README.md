@@ -65,12 +65,12 @@ powershell -ExecutionPolicy Bypass -File apps/desktop-windows/publish-single-fil
 Server / Agent の配布パッケージを作る場合:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/package-server.ps1 -Version v0.0.0-local -Runtime linux-x64
+powershell -ExecutionPolicy Bypass -File scripts/package-server.ps1 -Version v0.0.0-local -Runtime linux-x64,linux-arm64 -OutputDir artifacts/server
 ```
 
 タグ `v*` または GitHub Actions の手動実行では `.github/workflows/release-server.yml` が `ip-multiviewer_<version>_server_linux_x64.zip` と `ip-multiviewer_<version>_server_linux_arm64.zip`、それぞれの `.sha256` を作成します。パッケージには `ip-multiviewer-server`、`ip-multiviewer-agent`、`systemd/*.service.example`、`deploy/*.env.example`、`.env.example`、`docker-compose.prod.yml` が含まれます。
 
-Windows desktop release は `.github/workflows/release-windows.yml` が通常版 `ip-multiviewer_<version>_windows_x64.zip` と GPU 描画向け `ip-multiviewer_<version>_windows_x64_gpu.zip` を作成します。GPU 版は `EnableGpuRendering=true` で publish し、非 SRT stream の表示を LibVLC の Direct3D11 video output と D3D11VA hardware decode に寄せます。解析 ON の stream でも表示は FFmpeg bitmap playback に戻さず、黒味・フリーズ検知だけ低解像度 FFmpeg sidecar monitor で行います。SRT は互換性優先で FFmpeg playback fallback を継続します。
+Windows desktop release は `.github/workflows/release-windows.yml` が通常版 `ip-multiviewer_<version>_windows_x64.zip` と GPU 描画向け `ip-multiviewer_<version>_windows_x64_gpu.zip` を作成します。GPU 版は `EnableGpuRendering=true` で publish し、RTSP/RTMP/HTTP/HLS などの非 SRT stream は LibVLC の埋め込み D3D9/DXVA2 表示を使います。SRT stream は外部 VLC window と no-signal 時の hang を避けるため、FFmpeg/D3D11VA 30fps playback で tile 内に描画します。黒味・フリーズ検知は低解像度 FFmpeg sidecar monitor または playback snapshot で行います。
 
 ## Windows icon and signing
 

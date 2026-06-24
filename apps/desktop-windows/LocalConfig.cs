@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 
 namespace IPMultiViewer.Desktop;
 
@@ -198,8 +199,53 @@ public static class LocalConfigStore
             Directory.CreateDirectory(directory);
         }
 
-        using var stream = File.Create(path);
-        JsonSerializer.Serialize(stream, config, Options);
+        var tempPath = Path.Combine(directory ?? Path.GetTempPath(), $".{Path.GetFileName(path)}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
+            {
+                JsonSerializer.Serialize(stream, config, Options);
+            }
+
+            ReplaceWithRetry(tempPath, path);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+            }
+            catch
+            {
+                // Best effort cleanup for failed writes.
+            }
+        }
+    }
+
+    private static void ReplaceWithRetry(string sourcePath, string destinationPath)
+    {
+        const int attempts = 5;
+        for (var attempt = 1; attempt <= attempts; attempt++)
+        {
+            try
+            {
+                File.Move(sourcePath, destinationPath, overwrite: true);
+                return;
+            }
+            catch (IOException) when (attempt < attempts)
+            {
+                Thread.Sleep(50 * attempt);
+            }
+            catch (UnauthorizedAccessException) when (attempt < attempts)
+            {
+                Thread.Sleep(50 * attempt);
+            }
+        }
+
+        File.Move(sourcePath, destinationPath, overwrite: true);
     }
 
     public static LocalConfig CreateDefault()

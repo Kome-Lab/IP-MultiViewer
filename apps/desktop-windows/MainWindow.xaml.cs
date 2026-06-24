@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Buffers;
+using System.ComponentModel;
 using System.Collections.ObjectModel;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -20,8 +21,10 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using LibVLCSharp.Shared;
-using LibVLCSharp.WPF;
 using Microsoft.Win32;
+using FormsDockStyle = System.Windows.Forms.DockStyle;
+using FormsPanel = System.Windows.Forms.Panel;
+using WindowsFormsHost = System.Windows.Forms.Integration.WindowsFormsHost;
 using VlcMediaPlayer = LibVLCSharp.Shared.MediaPlayer;
 
 namespace IPMultiViewer.Desktop;
@@ -81,7 +84,8 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, StackPanel> _tileAlertStacks = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Grid> _tileSurfaceHosts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _tileSurfaceRenderKeys = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, VideoView> _tileVideoViews = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, WindowsFormsHost> _tileVideoHosts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, FormsPanel> _tileVideoPanels = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Image> _tileFfmpegImages = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, TextBlock> _tileSurfacePlaceholders = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Grid> _tileAudioMeterHosts = new(StringComparer.OrdinalIgnoreCase);
@@ -96,6 +100,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, byte[]> _alertSoundWaves = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _immediateVideoAlertEvaluationSync = new();
     private readonly HashSet<string> _pendingImmediateVideoAlertEvaluations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _pendingImmediateBlackFrameDetections = new(StringComparer.OrdinalIgnoreCase);
     private readonly HttpClient _httpClient = new();
     private SoundPlayer? _activeAlertSoundPlayer;
     private MemoryStream? _activeAlertSoundStream;
@@ -114,11 +119,12 @@ public partial class MainWindow : Window
     private bool _playbackStartInFlight;
     private bool _layoutSelectionInProgress;
     private const double TileFrameThickness = 3;
+    private const double EmbeddedVideoMeterReservePx = 84;
     private const int LivePlaybackCacheMs = 100;
     private const string GpuRenderingEnvironmentVariable = "IPMV_GPU_RENDERING";
     private const string ForceFfmpegPlaybackEnvironmentVariable = "IPMV_FORCE_FFMPEG_PLAYBACK";
-    private const string GpuAudioMetersEnvironmentVariable = "IPMV_GPU_AUDIO_METERS";
     private static readonly TimeSpan PlaybackVideoFreshnessWarning = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan ImmediateBlackAlertMinimumVisibleDuration = TimeSpan.FromSeconds(2);
     private static readonly JsonSerializerOptions ServerJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -232,7 +238,7 @@ public partial class MainWindow : Window
         Core.Initialize();
         _libVlc = new LibVLC(LowLatencyVlcInstanceOptions());
         AppendDesktopLog(GpuRenderingEnabled()
-            ? "LibVLC initialized for GPU rendering: vout=direct3d11, avcodec-hw=d3d11va."
+            ? "LibVLC initialized for embedded GPU rendering: vout=direct3d9, avcodec-hw=dxva2."
             : "LibVLC initialized for standard rendering.");
         return _libVlc;
     }
@@ -253,8 +259,10 @@ public partial class MainWindow : Window
 
         if (GpuRenderingEnabled())
         {
-            options.Add("--vout=direct3d11");
-            options.Add("--avcodec-hw=d3d11va");
+            options.Add("--vout=direct3d9");
+            options.Add("--avcodec-hw=dxva2");
+            options.Add("--embedded-video");
+            options.Add("--no-video-deco");
         }
 
         return options.ToArray();
@@ -270,6 +278,24 @@ public partial class MainWindow : Window
 #endif
     }
 
+    internal static string FfmpegHardwareDecodeMode()
+    {
+        return OperatingSystem.IsWindows() && GpuRenderingEnabled()
+            ? "d3d11va"
+            : "auto";
+    }
+
+    internal static void AddFfmpegHardwareDecodeArguments(Collection<string> arguments)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        arguments.Add("-hwaccel");
+        arguments.Add(FfmpegHardwareDecodeMode());
+    }
+
     private static TimeSpan PlaybackRefreshInterval()
     {
         return GpuRenderingEnabled()
@@ -281,12 +307,6 @@ public partial class MainWindow : Window
     {
         return IsTruthy(Environment.GetEnvironmentVariable(ForceFfmpegPlaybackEnvironmentVariable)) ||
             IsTruthy(Environment.GetEnvironmentVariable("IPMULTIVIEWER_FORCE_FFMPEG_PLAYBACK"));
-    }
-
-    internal static bool GpuAudioMetersEnabled()
-    {
-        return IsTruthy(Environment.GetEnvironmentVariable(GpuAudioMetersEnvironmentVariable)) ||
-            IsTruthy(Environment.GetEnvironmentVariable("IPMULTIVIEWER_GPU_AUDIO_METERS"));
     }
 
     private static bool IsTruthy(string? value)
@@ -339,7 +359,8 @@ public partial class MainWindow : Window
         _tileAlertStacks.Clear();
         _tileSurfaceHosts.Clear();
         _tileSurfaceRenderKeys.Clear();
-        _tileVideoViews.Clear();
+        _tileVideoHosts.Clear();
+        _tileVideoPanels.Clear();
         _tileFfmpegImages.Clear();
         _tileSurfacePlaceholders.Clear();
         _tileAudioMeterHosts.Clear();
@@ -370,10 +391,7 @@ public partial class MainWindow : Window
 
     private void DetachRenderedPlaybackSurfaces()
     {
-        foreach (var view in _tileVideoViews.Values)
-        {
-            view.MediaPlayer = null;
-        }
+        DisposeRenderedVideoHosts();
 
         foreach (var image in _tileFfmpegImages.Values)
         {
@@ -383,6 +401,38 @@ public partial class MainWindow : Window
         foreach (var host in _tileSurfaceHosts.Values)
         {
             host.Children.Clear();
+        }
+    }
+
+    private void DisposeRenderedVideoHosts()
+    {
+        foreach (var streamId in _tileVideoHosts.Keys.ToList())
+        {
+            DisposeRenderedVideoHost(streamId);
+        }
+    }
+
+    private void DisposeRenderedVideoHost(string streamId)
+    {
+        if (_players.TryGetValue(streamId, out var player))
+        {
+            player.Hwnd = IntPtr.Zero;
+        }
+
+        if (_tileVideoHosts.Remove(streamId, out var host))
+        {
+            if (host.Parent is System.Windows.Controls.Panel parent)
+            {
+                parent.Children.Remove(host);
+            }
+
+            host.Child = null;
+            host.Dispose();
+        }
+
+        if (_tileVideoPanels.Remove(streamId, out var panel))
+        {
+            panel.Dispose();
         }
     }
 
@@ -438,10 +488,7 @@ public partial class MainWindow : Window
         }
 
         _streamTileIndexes.Remove(streamId);
-        if (_tileVideoViews.Remove(streamId, out var view))
-        {
-            view.MediaPlayer = null;
-        }
+        DisposeRenderedVideoHost(streamId);
 
         if (_tileFfmpegImages.Remove(streamId, out var image))
         {
@@ -534,10 +581,15 @@ public partial class MainWindow : Window
             Background = Brushes.Transparent
         };
 
-        var videoFrame = new Grid { Background = BrushFromHex(statusColor) };
+        var videoFrame = new Grid
+        {
+            Background = BrushFromHex(statusColor),
+            ClipToBounds = true
+        };
         videoFrame.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(TileFrameThickness) });
         videoFrame.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         videoFrame.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(TileFrameThickness) });
+        videoFrame.RowDefinitions.Add(new RowDefinition { Height = new GridLength(TileFrameThickness) });
         videoFrame.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         videoFrame.RowDefinitions.Add(new RowDefinition { Height = new GridLength(TileFrameThickness) });
         Grid.SetRow(videoFrame, 0);
@@ -545,7 +597,7 @@ public partial class MainWindow : Window
 
         var leftFrame = new Border { Background = BrushFromHex(statusColor), IsHitTestVisible = false };
         Grid.SetColumn(leftFrame, 0);
-        Grid.SetRowSpan(leftFrame, 2);
+        Grid.SetRowSpan(leftFrame, 3);
         videoFrame.Children.Add(leftFrame);
 
         Grid.SetColumn(statusStrip, 1);
@@ -555,17 +607,21 @@ public partial class MainWindow : Window
 
         var rightFrame = new Border { Background = BrushFromHex(statusColor), IsHitTestVisible = false };
         Grid.SetColumn(rightFrame, 2);
-        Grid.SetRowSpan(rightFrame, 2);
+        Grid.SetRowSpan(rightFrame, 3);
         videoFrame.Children.Add(rightFrame);
 
         var bottomFrame = new Border { Background = BrushFromHex(statusColor), IsHitTestVisible = false };
         Grid.SetColumn(bottomFrame, 1);
-        Grid.SetRow(bottomFrame, 1);
+        Grid.SetRow(bottomFrame, 2);
         videoFrame.Children.Add(bottomFrame);
 
-        var surfaceHost = new Grid { Background = Brushes.Black };
+        var surfaceHost = new Grid
+        {
+            Background = Brushes.Black,
+            ClipToBounds = true
+        };
         Grid.SetColumn(surfaceHost, 1);
-        Grid.SetRow(surfaceHost, 0);
+        Grid.SetRow(surfaceHost, 1);
         videoFrame.Children.Add(surfaceHost);
         SetPlaybackSurface(surfaceHost, stream);
 
@@ -579,12 +635,12 @@ public partial class MainWindow : Window
         audioMeterHost.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         audioMeterHost.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         Grid.SetColumn(audioMeterHost, 1);
-        Grid.SetRow(audioMeterHost, 0);
+        Grid.SetRow(audioMeterHost, 1);
         Panel.SetZIndex(audioMeterHost, 8);
         videoFrame.Children.Add(audioMeterHost);
 
         Grid.SetColumn(alertStack, 1);
-        Grid.SetRow(alertStack, 0);
+        Grid.SetRow(alertStack, 1);
         Panel.SetZIndex(alertStack, 10);
         videoFrame.Children.Add(alertStack);
 
@@ -1261,6 +1317,12 @@ public partial class MainWindow : Window
     private const double AudioMeterTrackWidth = 14;
     private const double AudioMeterScaleWidth = 32;
     private const int AudioMeterMaxChannels = 16;
+    private static readonly (double TopDb, double BottomDb, string Color, double Opacity)[] AudioMeterColorZones =
+    [
+        (0, -6, "#ef4444", 0.28),
+        (-6, -18, "#facc15", 0.22),
+        (-18, -60, "#22c55e", 0.18)
+    ];
     private static readonly TimeSpan AudioMeterTargetRefreshInterval = TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan AudioMeterHiddenProbeInterval = TimeSpan.FromMilliseconds(1000);
     private static readonly TimeSpan AudioMeterAnimationMinInterval = TimeSpan.FromMilliseconds(33);
@@ -1338,6 +1400,7 @@ public partial class MainWindow : Window
             ClipToBounds = true,
             Background = BrushFromHex("#080d16")
         };
+        AddAudioMeterColorZones(trackCanvas);
         AddAudioMeterGrid(trackCanvas);
         var fillClip = new RectangleGeometry(new Rect(0, AudioMeterHeight - 1, AudioMeterBarWidth, 1));
         var meterFill = new Border
@@ -1424,6 +1487,26 @@ public partial class MainWindow : Window
         brush.GradientStops.Add(new GradientStop(ColorFromHex("#22c55e"), 1.00));
         brush.Freeze();
         return brush;
+    }
+
+    private static void AddAudioMeterColorZones(Canvas canvas)
+    {
+        foreach (var (topDb, bottomDb, color, opacity) in AudioMeterColorZones)
+        {
+            var top = AudioMeterYForDb(topDb);
+            var bottom = AudioMeterYForDb(bottomDb);
+            var zone = new Border
+            {
+                Width = AudioMeterBarWidth,
+                Height = Math.Max(1, bottom - top),
+                Background = BrushFromHex(color),
+                Opacity = opacity,
+                IsHitTestVisible = false
+            };
+            Canvas.SetLeft(zone, 2);
+            Canvas.SetTop(zone, Math.Round(top));
+            canvas.Children.Add(zone);
+        }
     }
 
     private static void AddAudioMeterGrid(Canvas canvas)
@@ -1672,8 +1755,9 @@ public partial class MainWindow : Window
     {
         _ = Dispatcher.BeginInvoke(new Action(async () =>
         {
+            await System.Threading.Tasks.Task.Delay(500);
             await StartPlaybackForActiveLayoutStreamsAsync("Auto-starting receivers", restartLoaded: false);
-        }), DispatcherPriority.ContextIdle);
+        }), DispatcherPriority.ApplicationIdle);
     }
 
     private async System.Threading.Tasks.Task StartPlaybackForActiveLayoutStreamsAsync(string actionLabel, bool restartLoaded)
@@ -1721,6 +1805,7 @@ public partial class MainWindow : Window
                     await StartStreamPlaybackAsync(stream);
                     started++;
                     UpdateFooter($"{actionLabel}: {started} started, {skipped} skipped, {failed} failed...");
+                    await System.Threading.Tasks.Task.Delay(75);
                 }
                 catch (Exception ex)
                 {
@@ -1769,14 +1854,13 @@ public partial class MainWindow : Window
             return;
         }
 
-        _settingsWindow.Owner ??= this;
         _settingsWindow.Show();
         _settingsWindow.Activate();
     }
 
     private void OpenAlertHistoryButton_Click(object sender, RoutedEventArgs e)
     {
-        _alertHistoryWindow ??= new AlertHistoryWindow(this) { Owner = this };
+        _alertHistoryWindow ??= new AlertHistoryWindow(this);
         _alertHistoryWindow.RefreshAlerts();
         if (_alertHistoryWindow.IsVisible)
         {
@@ -2061,7 +2145,8 @@ public partial class MainWindow : Window
     {
         var surface = new Grid
         {
-            Background = Brushes.Black
+            Background = Brushes.Black,
+            ClipToBounds = true
         };
 
         SetPlaybackSurface(surface, stream);
@@ -2070,19 +2155,39 @@ public partial class MainWindow : Window
 
     private void EnsurePlaybackSurfaceChildren(Grid surface, StreamConfig stream)
     {
-        if (!_tileVideoViews.TryGetValue(stream.Id, out var view))
+        if (ShouldUseLibVlcSurface(stream))
         {
-            view = new VideoView
+            if (!_tileVideoHosts.TryGetValue(stream.Id, out var host))
             {
-                HorizontalAlignment = HorizontalAlignment.Stretch,
-                VerticalAlignment = VerticalAlignment.Stretch
-            };
-            _tileVideoViews[stream.Id] = view;
-            surface.Children.Add(view);
+                var panel = new FormsPanel
+                {
+                    BackColor = System.Drawing.Color.Black,
+                    Dock = FormsDockStyle.Fill
+                };
+
+                host = new WindowsFormsHost
+                {
+                    Child = panel,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    VerticalAlignment = VerticalAlignment.Stretch,
+                    Margin = new Thickness(EmbeddedVideoMeterReservePx, 0, EmbeddedVideoMeterReservePx, 0),
+                    Visibility = Visibility.Hidden,
+                    SnapsToDevicePixels = true,
+                    UseLayoutRounding = true
+                };
+                BindSurfaceChildSize(host, surface);
+                _tileVideoHosts[stream.Id] = host;
+                _tileVideoPanels[stream.Id] = panel;
+                surface.Children.Insert(0, host);
+            }
+            else if (!surface.Children.Contains(host))
+            {
+                surface.Children.Insert(0, host);
+            }
         }
-        else if (!surface.Children.Contains(view))
+        else if (_tileVideoHosts.ContainsKey(stream.Id))
         {
-            surface.Children.Add(view);
+            DisposeRenderedVideoHost(stream.Id);
         }
 
         if (!_tileFfmpegImages.TryGetValue(stream.Id, out var image))
@@ -2091,9 +2196,12 @@ public partial class MainWindow : Window
             {
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 VerticalAlignment = VerticalAlignment.Stretch,
+                SnapsToDevicePixels = true,
+                UseLayoutRounding = true,
                 Stretch = Stretch.Uniform,
                 Visibility = Visibility.Hidden
             };
+            BindSurfaceChildSize(image, surface);
             _tileFfmpegImages[stream.Id] = image;
             surface.Children.Add(image);
         }
@@ -2119,6 +2227,36 @@ public partial class MainWindow : Window
         }
     }
 
+    private bool ShouldUseLibVlcSurface(StreamConfig stream)
+    {
+        return _players.ContainsKey(stream.Id) || !ShouldUseFfmpegPlayback(stream);
+    }
+
+    private static void BindSurfaceChildSize(FrameworkElement child, FrameworkElement surface)
+    {
+        BindingOperations.SetBinding(
+            child,
+            FrameworkElement.WidthProperty,
+            new Binding(nameof(ActualWidth)) { Source = surface });
+        BindingOperations.SetBinding(
+            child,
+            FrameworkElement.HeightProperty,
+            new Binding(nameof(ActualHeight)) { Source = surface });
+    }
+
+    private bool TryGetVideoPanelHandle(string streamId, out IntPtr hwnd)
+    {
+        if (_tileVideoPanels.TryGetValue(streamId, out var panel))
+        {
+            panel.CreateControl();
+            hwnd = panel.Handle;
+            return hwnd != IntPtr.Zero;
+        }
+
+        hwnd = IntPtr.Zero;
+        return false;
+    }
+
     private void SetPlaybackSurface(Grid surface, StreamConfig? stream)
     {
         if (stream is null)
@@ -2138,19 +2276,24 @@ public partial class MainWindow : Window
         var hasPlayer = _players.TryGetValue(stream.Id, out var player);
         var hasFfmpegSession = _ffmpegPlaybackSessions.TryGetValue(stream.Id, out var ffmpegSession);
         var snapshotAvailable = _playbackSnapshots.TryGetValue(stream.Id, out var snapshot);
-        var showVlcVideo = hasPlayer &&
+        var clearPlaybackSurface = snapshotAvailable && ShouldClearPlaybackSurface(stream, snapshot!);
+        var keepVlcVideoAttached = hasPlayer && !clearPlaybackSurface;
+        var showVlcVideo = keepVlcVideoAttached &&
             snapshotAvailable &&
-            HasPresentedVlcVideo(stream.Id, snapshot!);
+            HasPresentedVlcVideo(stream.Id, snapshot!) &&
+            IsPlaybackVideoFreshForSurface(stream, snapshot!);
         var showFfmpegVideo = hasFfmpegSession &&
             snapshotAvailable &&
             string.Equals(snapshot!.State, "playing", StringComparison.OrdinalIgnoreCase) &&
-            ffmpegSession!.HasPresentedFrame;
+            ffmpegSession!.HasPresentedFrame &&
+            !IsPlaybackVideoStaleForSurface(stream.Id, AlertProfileFor(stream));
         var surfaceKey = string.Join("|",
             hasPlayer ? "vlc" : "no-vlc",
             hasPlayer ? player!.GetHashCode().ToString(CultureInfo.InvariantCulture) : "no-player-ref",
             hasFfmpegSession ? "ffmpeg" : "no-ffmpeg",
             hasFfmpegSession ? ffmpegSession!.GetHashCode().ToString(CultureInfo.InvariantCulture) : "no-ffmpeg-ref",
             snapshotAvailable ? snapshot!.State : "no-snapshot",
+            clearPlaybackSurface ? "clear-surface" : "keep-surface",
             showVlcVideo ? "has-vlc-presented-video" : "no-vlc-presented-video",
             showVlcVideo ? "show-vlc" : "hide-vlc",
             showFfmpegVideo ? "show-ffmpeg" : "hide-ffmpeg",
@@ -2162,15 +2305,17 @@ public partial class MainWindow : Window
         }
 
         _tileSurfaceRenderKeys[stream.Id] = surfaceKey;
-        if (_tileVideoViews.TryGetValue(stream.Id, out var videoView))
+        if (_tileVideoHosts.TryGetValue(stream.Id, out var videoHost))
         {
-            var desiredPlayer = hasPlayer ? player : null;
-            if (!ReferenceEquals(videoView.MediaPlayer, desiredPlayer))
+            if (keepVlcVideoAttached &&
+                player is not null &&
+                TryGetVideoPanelHandle(stream.Id, out var hwnd) &&
+                player.Hwnd != hwnd)
             {
-                videoView.MediaPlayer = desiredPlayer;
+                player.Hwnd = hwnd;
             }
 
-            videoView.Visibility = showVlcVideo ? Visibility.Visible : Visibility.Hidden;
+            videoHost.Visibility = keepVlcVideoAttached ? Visibility.Visible : Visibility.Hidden;
         }
 
         if (_tileFfmpegImages.TryGetValue(stream.Id, out var image))
@@ -2187,7 +2332,10 @@ public partial class MainWindow : Window
         if (_tileSurfacePlaceholders.TryGetValue(stream.Id, out var placeholder))
         {
             var loaded = hasPlayer || hasFfmpegSession;
-            SetTextIfChanged(placeholder, loaded ? "Playback starting" : "Playback stopped");
+            var placeholderText = clearPlaybackSurface
+                ? "No signal"
+                : loaded ? "Playback starting" : "Playback stopped";
+            SetTextIfChanged(placeholder, placeholderText);
             placeholder.Visibility = showVlcVideo || showFfmpegVideo ? Visibility.Collapsed : Visibility.Visible;
         }
     }
@@ -2590,7 +2738,7 @@ public partial class MainWindow : Window
 
         if (RequiresFfmpegPlayback(stream))
         {
-            return !GpuRenderingEnabled();
+            return true;
         }
 
         return stream.AnalysisEnabled && !GpuRenderingEnabled();
@@ -2619,7 +2767,7 @@ public partial class MainWindow : Window
             profile.FreezeDifferenceThreshold,
             profile.BlackThreshold,
             profile.BlackPixelRatioThreshold,
-            () => QueueImmediateVideoAlertEvaluation(stream.Id),
+            () => QueueImmediateVideoAlertEvaluation(stream.Id, blackFrameDetected: true),
             () =>
             {
                 if (session is not null)
@@ -2641,7 +2789,7 @@ public partial class MainWindow : Window
         RefreshPlaybackSurface(stream);
         UpdateTileChrome(stream);
         session.Start();
-        AppendDesktopLog($"FFmpeg playback started for {stream.Id}: {MaskStreamUrl(stream.InputUrl)}");
+        AppendDesktopLog($"FFmpeg playback started for {stream.Id}: {MaskStreamUrl(stream.InputUrl)} / hwaccel={FfmpegHardwareDecodeMode()}");
     }
 
     private void OnFirstFfmpegFramePresented(StreamConfig stream, FfmpegPlaybackSession session)
@@ -2728,7 +2876,7 @@ public partial class MainWindow : Window
         var libVlc = EnsureLibVlc();
         var player = new VlcMediaPlayer(libVlc)
         {
-            Mute = _config.GlobalMute || !stream.AudioMonitorEnabled
+            Mute = ShouldMuteLibVlcPlaybackAudio(stream)
         };
         AudioLevelMonitor? audioMonitor = null;
         if (ShouldAttachAudioMonitor(stream))
@@ -2749,6 +2897,7 @@ public partial class MainWindow : Window
         _lastPlaybackProgressAt[stream.Id] = now;
         _lastPlaybackTimeMs[stream.Id] = player.Time;
         _lastPlaybackProgressMarker[stream.Id] = PlaybackProgressMarker(initialSnapshot);
+        RefreshPlaybackSurface(stream);
         UpdateTileChrome(stream);
         return (libVlc, player, audioMonitor);
     }
@@ -3074,7 +3223,7 @@ public partial class MainWindow : Window
             _videoMonitors[stream.Id] = monitor;
             _videoMonitorShareKeys[stream.Id] = shareKey;
             _sharedVideoMonitors[shareKey] = monitor;
-            AppendDesktopLog($"GPU rendering sidecar analysis monitor started for {stream.Id}: playback remains LibVLC Direct3D11.");
+            AppendDesktopLog($"GPU rendering sidecar analysis monitor started for {stream.Id}: playback remains LibVLC embedded GPU output.");
             return true;
         }
         catch (Exception ex)
@@ -3087,17 +3236,17 @@ public partial class MainWindow : Window
 
     private static bool ShouldAttachAudioMonitor(StreamConfig stream)
     {
-        if (!stream.AudioMonitorEnabled)
-        {
-            return false;
-        }
-
-        return !GpuRenderingEnabled() || GpuAudioMetersEnabled();
+        return stream.AudioMonitorEnabled;
     }
 
     private bool ShouldDisableLibVlcPlaybackAudio(StreamConfig stream, AudioLevelMonitor? audioMonitor)
     {
-        return audioMonitor is null && (_config.GlobalMute || !stream.AudioMonitorEnabled);
+        return audioMonitor is null;
+    }
+
+    private static bool ShouldMuteLibVlcPlaybackAudio(StreamConfig stream)
+    {
+        return true;
     }
 
     private void QueueImmediateVideoAlertEvaluationsForMonitor(IVideoAnalysisMonitor monitor)
@@ -3110,7 +3259,7 @@ public partial class MainWindow : Window
                 .ToList();
             foreach (var streamId in streamIds)
             {
-                QueueImmediateVideoAlertEvaluation(streamId);
+                QueueImmediateVideoAlertEvaluation(streamId, blackFrameDetected: true);
             }
         }), DispatcherPriority.Normal);
     }
@@ -3158,7 +3307,7 @@ public partial class MainWindow : Window
         foreach (var (streamId, player) in _players)
         {
             var stream = _config.Streams.FirstOrDefault(stream => stream.Id == streamId);
-            player.Mute = _config.GlobalMute || stream?.AudioMonitorEnabled == false;
+            player.Mute = stream is null || ShouldMuteLibVlcPlaybackAudio(stream);
             if (stream?.AudioMonitorEnabled == true)
             {
                 StartAudioMonitor(stream);
@@ -3223,7 +3372,7 @@ public partial class MainWindow : Window
             ? $" / video age max {maxVideoAgeMs:0}ms"
             : "";
         var renderBackend = GpuRenderingEnabled()
-            ? $" / render gpu d3d11: {_players.Count} vlc, {_ffmpegPlaybackSessions.Count} ffmpeg"
+            ? $" / render gpu: {_players.Count} vlc d3d9/dxva2, {_ffmpegPlaybackSessions.Count} ffmpeg {FfmpegHardwareDecodeMode()}"
             : $" / render standard: {_players.Count} vlc, {_ffmpegPlaybackSessions.Count} ffmpeg";
         SetTextIfChanged(PlaybackSummaryText, $"{active} active / {_players.Count + _ffmpegPlaybackSessions.Count} loaded / {layoutStreams.Count} layout streams / {errors} errors{videoFreshness}{renderBackend}");
     }
@@ -3721,6 +3870,31 @@ public partial class MainWindow : Window
             (snapshot.DisplayedPictures > 0 || _lastVideoPresentedAt.ContainsKey(streamId));
     }
 
+    private bool ShouldClearPlaybackSurface(StreamConfig stream, PlaybackSnapshot snapshot)
+    {
+        var profile = AlertProfileFor(stream);
+        return IsDecodeError(snapshot) ||
+            IsNoSignal(snapshot) ||
+            IsOpeningTimedOut(stream.Id, snapshot, profile) ||
+            IsPlaybackVideoStaleForSurface(stream.Id, profile);
+    }
+
+    private bool IsPlaybackVideoFreshForSurface(StreamConfig stream, PlaybackSnapshot snapshot)
+    {
+        return string.Equals(snapshot.State, "playing", StringComparison.OrdinalIgnoreCase) &&
+            !IsPlaybackVideoStaleForSurface(stream.Id, AlertProfileFor(stream));
+    }
+
+    private bool IsPlaybackVideoStaleForSurface(string streamId, AlertProfileConfig profile)
+    {
+        if (!_lastVideoPresentedAt.TryGetValue(streamId, out var lastPresentedAt))
+        {
+            return false;
+        }
+
+        return (DateTimeOffset.UtcNow - lastPresentedAt).TotalSeconds >= Math.Max(1, profile.InputTimeoutSec);
+    }
+
     private string VideoFreshnessText(string streamId)
     {
         return VideoFreshnessText(PlaybackVideoFreshnessFor(streamId));
@@ -3891,10 +4065,15 @@ public partial class MainWindow : Window
         }
     }
 
-    private void QueueImmediateVideoAlertEvaluation(string streamId)
+    private void QueueImmediateVideoAlertEvaluation(string streamId, bool blackFrameDetected = false)
     {
         lock (_immediateVideoAlertEvaluationSync)
         {
+            if (blackFrameDetected)
+            {
+                _pendingImmediateBlackFrameDetections[streamId] = DateTimeOffset.UtcNow;
+            }
+
             if (!_pendingImmediateVideoAlertEvaluations.Add(streamId))
             {
                 return;
@@ -3937,12 +4116,14 @@ public partial class MainWindow : Window
 
             if (!stream.Enabled || !stream.AnalysisEnabled || !IsPlaybackLoaded(stream.Id))
             {
+                ClearPendingImmediateBlackFrameDetection(stream.Id);
                 continue;
             }
 
             var profile = AlertProfileFor(stream);
             if (!_playbackSnapshots.TryGetValue(stream.Id, out var snapshot))
             {
+                ClearPendingImmediateBlackFrameDetection(stream.Id);
                 changed |= ResolveActiveAlert(stream.Id, "video.no_signal");
                 changed |= ResolveActiveAlert(stream.Id, "video.low_fps");
                 changed |= ResolveActiveAlert(stream.Id, "video.decode_error");
@@ -3962,6 +4143,7 @@ public partial class MainWindow : Window
             var analysisUnavailable = !decodeError && IsVideoAnalysisUnavailable(stream.Id, snapshot, profile);
             LogVideoAnalysisState(stream.Id, profile, snapshot, analysisUnavailable);
             var noSignal = !decodeError && (IsNoSignal(snapshot) || IsOpeningTimedOut(stream.Id, snapshot, profile) || IsPlaybackTimedOut(stream.Id, profile));
+            var immediateBlackFrameDetected = HasPendingImmediateBlackFrameDetection(stream.Id, profile);
             if (analysisUnavailable && IsAnalysisEnded(stream.Id))
             {
                 if (IssueDurationSec(stream.Id, "video.analysis_restart") >= Math.Max(3, profile.InputTimeoutSec))
@@ -3981,6 +4163,7 @@ public partial class MainWindow : Window
                 ClearIssueSince(stream.Id, "video.no_signal");
                 ClearIssueSince(stream.Id, "video.black");
                 ClearIssueSince(stream.Id, "video.freeze");
+                ClearPendingImmediateBlackFrameDetection(stream.Id);
                 changed |= ResolveActiveAlert(stream.Id, "video.no_signal");
                 changed |= ResolveActiveAlert(stream.Id, "video.black");
                 changed |= ResolveActiveAlert(stream.Id, "video.freeze");
@@ -3998,6 +4181,7 @@ public partial class MainWindow : Window
                 }
                 ClearIssueSince(stream.Id, "video.black");
                 ClearIssueSince(stream.Id, "video.freeze");
+                ClearPendingImmediateBlackFrameDetection(stream.Id);
                 changed |= ResolveActiveAlert(stream.Id, "video.black");
                 changed |= ResolveActiveAlert(stream.Id, "video.freeze");
             }
@@ -4008,9 +4192,10 @@ public partial class MainWindow : Window
                 changed |= ResolveActiveAlert(stream.Id, "video.no_signal");
             }
 
-            if (!decodeError && !noSignal && IsBlackVideo(stream.Id, profile))
+            if (!decodeError && !noSignal && (immediateBlackFrameDetected || IsBlackVideo(stream.Id, profile)))
             {
                 MarkIssueSince(stream.Id, "video.black");
+                ClearPendingImmediateBlackFrameDetection(stream.Id);
                 changed |= RaiseAlert(stream, "video.black", "error", AlertMessageBlack);
             }
             else if (!decodeError && !noSignal && analysisUnavailable)
@@ -4758,14 +4943,21 @@ public partial class MainWindow : Window
     private bool ResolveActiveAlert(string streamId, string type)
     {
         var changed = false;
+        var now = DateTimeOffset.UtcNow;
         foreach (var alert in _config.AlertHistory.Where(alert =>
             string.Equals(alert.StreamId, streamId, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(alert.Type, type, StringComparison.OrdinalIgnoreCase) &&
             ActiveAlertStatuses.Contains(alert.Status)))
         {
+            if (string.Equals(type, "video.black", StringComparison.OrdinalIgnoreCase) &&
+                now - alert.StartedAt < ImmediateBlackAlertMinimumVisibleDuration)
+            {
+                continue;
+            }
+
             alert.Status = "resolved";
             alert.SnoozedUntil = null;
-            alert.UpdatedAt = DateTimeOffset.UtcNow;
+            alert.UpdatedAt = now;
             alert.SyncedAt = null;
             alert.SourceClientId = _config.ClientId;
             changed = true;
@@ -4791,6 +4983,34 @@ public partial class MainWindow : Window
     private void ClearIssueSince(string streamId, string type)
     {
         _issueSince.Remove(IssueKey(streamId, type));
+    }
+
+    private bool HasPendingImmediateBlackFrameDetection(string streamId, AlertProfileConfig profile)
+    {
+        lock (_immediateVideoAlertEvaluationSync)
+        {
+            if (!_pendingImmediateBlackFrameDetections.TryGetValue(streamId, out var detectedAt))
+            {
+                return false;
+            }
+
+            var maxAge = TimeSpan.FromSeconds(Math.Max(2, profile.InputTimeoutSec));
+            if (DateTimeOffset.UtcNow - detectedAt <= maxAge)
+            {
+                return true;
+            }
+
+            _pendingImmediateBlackFrameDetections.Remove(streamId);
+            return false;
+        }
+    }
+
+    private void ClearPendingImmediateBlackFrameDetection(string streamId)
+    {
+        lock (_immediateVideoAlertEvaluationSync)
+        {
+            _pendingImmediateBlackFrameDetections.Remove(streamId);
+        }
     }
 
     private double IssueDurationSec(string streamId, string type)
@@ -4901,12 +5121,6 @@ public partial class MainWindow : Window
 
     private void SchedulePlaybackRestartIfNeeded(string streamId, PlaybackSnapshot snapshot)
     {
-        if (!IsRecoverablePlaybackState(snapshot.State))
-        {
-            _playbackRestartAfter.Remove(streamId);
-            return;
-        }
-
         if (_playbackStartInFlight)
         {
             return;
@@ -4920,6 +5134,15 @@ public partial class MainWindow : Window
         {
             _playbackRestartAfter.Remove(streamId);
             _playbackRestartAttempts.Remove(streamId);
+            return;
+        }
+
+        var profile = AlertProfileFor(stream);
+        if (!IsRecoverablePlaybackState(snapshot.State) &&
+            !IsOpeningTimedOut(streamId, snapshot, profile) &&
+            !IsPlaybackVideoStaleForSurface(streamId, profile))
+        {
+            _playbackRestartAfter.Remove(streamId);
             return;
         }
 
@@ -5058,6 +5281,11 @@ public partial class MainWindow : Window
         ClearIssueSince(streamId, "audio.channel_missing");
         ClearIssueSince(streamId, "audio.silence");
         ClearIssueSince(streamId, "audio.clipping");
+        lock (_immediateVideoAlertEvaluationSync)
+        {
+            _pendingImmediateVideoAlertEvaluations.Remove(streamId);
+            _pendingImmediateBlackFrameDetections.Remove(streamId);
+        }
     }
 
     private static PlaybackSnapshot BuildSnapshot(VlcMediaPlayer player, string? overrideState)
@@ -5251,10 +5479,40 @@ public partial class MainWindow : Window
         _playbackTimer.Stop();
         _audioMeterTimer.Stop();
         StopContinuousAlertSound();
+        CloseAuxiliaryWindows();
         StopAllPlayback();
         _httpClient.Dispose();
         _libVlc?.Dispose();
         base.OnClosed(e);
+        Application.Current?.Shutdown();
+    }
+
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        CloseAuxiliaryWindows();
+        base.OnClosing(e);
+    }
+
+    private void CloseAuxiliaryWindows()
+    {
+        try
+        {
+            _settingsWindow.ForceClose();
+        }
+        catch (InvalidOperationException)
+        {
+            // Already closed during shutdown.
+        }
+
+        try
+        {
+            _alertHistoryWindow?.ForceClose();
+            _alertHistoryWindow = null;
+        }
+        catch (InvalidOperationException)
+        {
+            // Already closed during shutdown.
+        }
     }
 
     private static TextBlock MutedText(string text)
@@ -5460,12 +5718,13 @@ internal interface IImmediateBlackFrameMonitor
 
 internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateBlackFrameMonitor
 {
-    private const int Width = 640;
-    private const int Height = 360;
+    private const int Width = 426;
+    private const int Height = 240;
     private const int BytesPerPixel = 3;
     private const int Stride = Width * BytesPerPixel;
     private const int FrameBytes = Stride * Height;
-    private const double TargetFps = 15;
+    private const double TargetFps = 30;
+    private const double FpsObservationWindowSeconds = 1.0;
     private const double SilenceFloorDb = -120;
     private const int AnalysisSampleStrideX = 8;
     private const int AnalysisSampleStrideY = 8;
@@ -5535,6 +5794,12 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
     private long _lastFrameReadTicks;
     private long _lastFramePresentedTicks;
     private long _lastPresentedFrameReadTicks;
+    private long _readFpsWindowStartTimestamp;
+    private long _readFpsWindowStartFrames;
+    private double _observedReadFps;
+    private long _presentedFpsWindowStartTimestamp;
+    private long _presentedFpsWindowStartFrames;
+    private double _observedPresentedFps;
     private bool _disposed;
     private DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
     private double _lastParsedRmsDb = SilenceFloorDb;
@@ -5603,6 +5868,28 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
 
     public string Kind => "ffmpeg-playback";
 
+    public double ObservedReadFps
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _observedReadFps;
+            }
+        }
+    }
+
+    public double ObservedPresentedFps
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _observedPresentedFps;
+            }
+        }
+    }
+
     public string State => _state;
 
     public string LastError => _lastError;
@@ -5631,6 +5918,7 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
 
     private Process StartProcess(string inputUrl)
     {
+        var ffmpegInputUrl = FfmpegInputUrl(inputUrl);
         var startInfo = new ProcessStartInfo
         {
             FileName = _ffmpegPath,
@@ -5639,9 +5927,9 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
             RedirectStandardError = true,
             CreateNoWindow = true
         };
-        AddCommonFfmpegInputArguments(startInfo.ArgumentList, _protocol, inputUrl);
+        AddCommonFfmpegInputArguments(startInfo.ArgumentList, _protocol, ffmpegInputUrl);
         startInfo.ArgumentList.Add("-i");
-        startInfo.ArgumentList.Add(inputUrl);
+        startInfo.ArgumentList.Add(ffmpegInputUrl);
         startInfo.ArgumentList.Add("-map");
         startInfo.ArgumentList.Add("0:v:0");
         startInfo.ArgumentList.Add("-vf");
@@ -5658,6 +5946,13 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
         startInfo.ArgumentList.Add(OperatingSystem.IsWindows() ? "NUL" : "/dev/null");
 
         return Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start ffmpeg playback.");
+    }
+
+    private static string FfmpegInputUrl(string inputUrl)
+    {
+        return Uri.TryCreate(inputUrl, UriKind.Absolute, out var uri) && uri.IsFile
+            ? uri.LocalPath
+            : inputUrl;
     }
 
     private static List<string> BuildInputCandidates(string inputUrl, string protocol)
@@ -5696,6 +5991,9 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
         lock (_sync)
         {
             var state = _state;
+            var observedFps = _observedPresentedFps > 0
+                ? _observedPresentedFps
+                : _observedReadFps;
             var framesPresented = Interlocked.Read(ref _bitmapFramesPresented);
             if (string.Equals(state, "playing", StringComparison.OrdinalIgnoreCase) && framesPresented == 0)
             {
@@ -5704,7 +6002,9 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
 
             return new PlaybackSnapshot(
                 state,
-                string.Equals(state, "playing", StringComparison.OrdinalIgnoreCase) ? (float)TargetFps : 0,
+                string.Equals(state, "playing", StringComparison.OrdinalIgnoreCase)
+                    ? (float)(observedFps > 0 ? observedFps : TargetFps)
+                    : 0,
                 _framesRead > 0 ? (long)(_framesRead * 1000 / TargetFps) : 0,
                 -1,
                 true,
@@ -5767,11 +6067,7 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
         arguments.Add("-nostats");
         arguments.Add("-loglevel");
         arguments.Add("error");
-        if (OperatingSystem.IsWindows())
-        {
-            arguments.Add("-hwaccel");
-            arguments.Add("auto");
-        }
+        MainWindow.AddFfmpegHardwareDecodeArguments(arguments);
 
         arguments.Add("-fflags");
         arguments.Add("nobuffer");
@@ -6069,6 +6365,15 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
                 Interlocked.Exchange(ref _lastFramePresentedTicks, presentedTicks);
                 Interlocked.Exchange(ref _lastPresentedFrameReadTicks, presentedFrameReadTicks);
                 var presentedFrames = Interlocked.Increment(ref _bitmapFramesPresented);
+                lock (_sync)
+                {
+                    UpdateObservedFrameRateLocked(
+                        ref _presentedFpsWindowStartTimestamp,
+                        ref _presentedFpsWindowStartFrames,
+                        ref _observedPresentedFps,
+                        presentedFrames);
+                }
+
                 if (presentedFrames == 1)
                 {
                     try
@@ -6178,6 +6483,11 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
         {
             _framesRead++;
             _bytesRead += frame.Length;
+            UpdateObservedFrameRateLocked(
+                ref _readFpsWindowStartTimestamp,
+                ref _readFpsWindowStartFrames,
+                ref _observedReadFps,
+                _framesRead);
             snapshot = new VideoLumaSnapshot(
                 total / sampleCount / 255,
                 darkPixels / (double)sampleCount,
@@ -6191,6 +6501,31 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
         {
             _blackFrameDetected();
         }
+    }
+
+    private static void UpdateObservedFrameRateLocked(
+        ref long windowStartTimestamp,
+        ref long windowStartFrames,
+        ref double observedFps,
+        long currentFrames)
+    {
+        var now = Stopwatch.GetTimestamp();
+        if (windowStartTimestamp <= 0 || currentFrames <= windowStartFrames)
+        {
+            windowStartTimestamp = now;
+            windowStartFrames = currentFrames;
+            return;
+        }
+
+        var elapsedSeconds = (now - windowStartTimestamp) / (double)Stopwatch.Frequency;
+        if (elapsedSeconds < FpsObservationWindowSeconds)
+        {
+            return;
+        }
+
+        observedFps = (currentFrames - windowStartFrames) / elapsedSeconds;
+        windowStartTimestamp = now;
+        windowStartFrames = currentFrames;
     }
 
     public void Dispose()
@@ -6369,8 +6704,7 @@ internal sealed class FfmpegVideoAnalysisMonitor : IVideoAnalysisMonitor, IImmed
             return;
         }
 
-        arguments.Add("-hwaccel");
-        arguments.Add("auto");
+        MainWindow.AddFfmpegHardwareDecodeArguments(arguments);
     }
 
     public bool TryGetSnapshot(out VideoLumaSnapshot snapshot)

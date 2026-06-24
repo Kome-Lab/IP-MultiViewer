@@ -1,6 +1,7 @@
 param(
     [string]$OutputPath = "$([Environment]::GetFolderPath('Desktop'))\IPMultiViewer.Desktop.exe",
-    [switch]$GpuRendering
+    [switch]$GpuRendering,
+    [string]$Version = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,18 +13,25 @@ if (Test-Path -LiteralPath $publishDir) {
     Remove-Item -LiteralPath $publishDir -Recurse -Force
 }
 
-dotnet publish $project `
-    -c Release `
-    -r win-x64 `
-    --self-contained true `
-    -o $publishDir `
-    -p:PublishSingleFile=true `
-    -p:IncludeNativeLibrariesForSelfExtract=true `
-    -p:IncludeAllContentForSelfExtract=true `
-    -p:EnableCompressionInSingleFile=true `
-    -p:DebugType=none `
-    -p:DebugSymbols=false `
-    -p:EnableGpuRendering=$($GpuRendering.IsPresent.ToString().ToLowerInvariant())
+$publishArgs = @(
+    $project,
+    "-c", "Release",
+    "-r", "win-x64",
+    "--self-contained", "true",
+    "-o", $publishDir,
+    "-p:PublishSingleFile=true",
+    "-p:IncludeNativeLibrariesForSelfExtract=true",
+    "-p:IncludeAllContentForSelfExtract=true",
+    "-p:EnableCompressionInSingleFile=true",
+    "-p:DebugType=none",
+    "-p:DebugSymbols=false",
+    "-p:EnableGpuRendering=$($GpuRendering.IsPresent.ToString().ToLowerInvariant())"
+)
+if (-not [string]::IsNullOrWhiteSpace($Version)) {
+    $publishArgs += "-p:Version=$Version"
+}
+
+dotnet publish @publishArgs
 
 $sourceExe = Join-Path $publishDir "IPMultiViewer.Desktop.exe"
 if (-not (Test-Path -LiteralPath $sourceExe)) {

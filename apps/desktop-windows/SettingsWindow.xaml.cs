@@ -6,6 +6,7 @@ namespace IPMultiViewer.Desktop;
 public partial class SettingsWindow : Window
 {
     private readonly MainWindow _owner;
+    private bool _allowClose;
 
     public SettingsWindow(MainWindow owner)
     {
@@ -34,7 +35,18 @@ public partial class SettingsWindow : Window
 
     private void SettingsWindow_Closing(object? sender, CancelEventArgs e)
     {
+        if (_allowClose)
+        {
+            return;
+        }
+
         e.Cancel = true;
         Hide();
+    }
+
+    internal void ForceClose()
+    {
+        _allowClose = true;
+        Close();
     }
 }

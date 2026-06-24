@@ -20,14 +20,30 @@ using IPMultiViewer.Desktop;
 
 internal static class Program
 {
+    private const double MinimumSmoothPresentedFps = 20.0;
+    private const int SmoothFpsMeasurementMs = 2500;
+
     [STAThread]
     private static int Main()
     {
         object? sessionA = null;
         object? sessionB = null;
+        var previousDataDir = Environment.GetEnvironmentVariable("IPMV_DATA_DIR");
+        var previousConfigDir = Environment.GetEnvironmentVariable("IPMV_CONFIG_DIR");
+        var previousLogDir = Environment.GetEnvironmentVariable("IPMV_LOG_DIR");
+        var previousLongDataDir = Environment.GetEnvironmentVariable("IPMULTIVIEWER_DATA_DIR");
+        var previousLongConfigDir = Environment.GetEnvironmentVariable("IPMULTIVIEWER_CONFIG_DIR");
+        var previousLongLogDir = Environment.GetEnvironmentVariable("IPMULTIVIEWER_LOG_DIR");
+        var smokeBaseDir = Path.Combine(Path.GetTempPath(), $"ipmv-desktop-smoke-{Guid.NewGuid():N}");
         try
         {
             AssertConfigStorePathOverrides();
+            Environment.SetEnvironmentVariable("IPMV_DATA_DIR", smokeBaseDir);
+            Environment.SetEnvironmentVariable("IPMV_CONFIG_DIR", null);
+            Environment.SetEnvironmentVariable("IPMV_LOG_DIR", null);
+            Environment.SetEnvironmentVariable("IPMULTIVIEWER_DATA_DIR", null);
+            Environment.SetEnvironmentVariable("IPMULTIVIEWER_CONFIG_DIR", null);
+            Environment.SetEnvironmentVariable("IPMULTIVIEWER_LOG_DIR", null);
             using var appScope = new WpfAppScope();
             var window = new MainWindow
             {
@@ -51,18 +67,20 @@ internal static class Program
             AssertPlaybackRestartBackoff();
             AssertGpuRenderingUsesLibVlcPlayback(window);
             AssertPlaybackStatusWaitsForPresentedVideo(window);
+            AssertPlaybackSurfaceClearsStaleVideo(window);
+            AssertTileVideoSurfaceHasDedicatedFrameRows(window);
             AssertAudioMeterSidePanels(window);
             AssertAudioLevelMonitorThrottlesCallbacks();
             AssertSharedSidecarAnalysisMonitors(window);
             AssertFfmpegSnapshotSampling();
+            AssertImmediateBlackFrameRaisesAlert(window);
             AssertFfmpegSidecarAnalysisSnapshotSampling();
             AssertFfmpegAudioStatsParser();
             AssertTileFreshnessTextDoesNotRepaintChrome(window);
             AssertTileAssignOnlyRendersAffectedTiles(window);
             (sessionA, sessionB) = AssertTwoFfmpegSessionsCanRun();
 
-            window.Close();
-            Pump(null, 100);
+            AssertMainWindowCloseReleasesAuxiliaryWindows(window);
             Console.WriteLine("desktop_smoke_ok");
             return 0;
         }
@@ -75,6 +93,23 @@ internal static class Program
         {
             DisposeReflective(sessionA);
             DisposeReflective(sessionB);
+            Environment.SetEnvironmentVariable("IPMV_DATA_DIR", previousDataDir);
+            Environment.SetEnvironmentVariable("IPMV_CONFIG_DIR", previousConfigDir);
+            Environment.SetEnvironmentVariable("IPMV_LOG_DIR", previousLogDir);
+            Environment.SetEnvironmentVariable("IPMULTIVIEWER_DATA_DIR", previousLongDataDir);
+            Environment.SetEnvironmentVariable("IPMULTIVIEWER_CONFIG_DIR", previousLongConfigDir);
+            Environment.SetEnvironmentVariable("IPMULTIVIEWER_LOG_DIR", previousLongLogDir);
+            try
+            {
+                if (Directory.Exists(smokeBaseDir))
+                {
+                    Directory.Delete(smokeBaseDir, recursive: true);
+                }
+            }
+            catch
+            {
+                // Best effort cleanup; a failed delete should not mask the smoke result.
+            }
         }
     }
 
@@ -118,6 +153,32 @@ internal static class Program
         if (window.Icon is null)
         {
             throw new InvalidOperationException("Main window icon must be set so the taskbar uses the IPMV icon.");
+        }
+    }
+
+    private static void AssertMainWindowCloseReleasesAuxiliaryWindows(MainWindow window)
+    {
+        var app = Application.Current ?? throw new InvalidOperationException("WPF Application was not initialized.");
+        var settingsWindow = (Window)Field(window, "_settingsWindow").GetValue(window)!;
+        settingsWindow.Show();
+        Pump(window, 100);
+        if (!app.Windows.Cast<Window>().Contains(settingsWindow))
+        {
+            throw new InvalidOperationException("Settings window was not registered with the WPF application before close verification.");
+        }
+
+        window.Close();
+        Pump(null, 100);
+        var remainingWindows = app.Windows
+            .Cast<Window>()
+            .Where(item => ReferenceEquals(item, window) ||
+                ReferenceEquals(item, settingsWindow) ||
+                item.GetType().Name.Contains("AlertHistory", StringComparison.Ordinal))
+            .Select(item => item.GetType().Name)
+            .ToArray();
+        if (remainingWindows.Length > 0)
+        {
+            throw new InvalidOperationException($"Main window close left auxiliary windows alive: {string.Join(", ", remainingWindows)}.");
         }
     }
 
@@ -403,10 +464,21 @@ internal static class Program
             Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", "1");
             var gpuInstanceOptions = ((IEnumerable<string>)Method(typeof(MainWindow), "LowLatencyVlcInstanceOptions", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
                 .Invoke(null, [])!).ToList();
-            if (!gpuInstanceOptions.Contains("--vout=direct3d11", StringComparer.OrdinalIgnoreCase) ||
-                !gpuInstanceOptions.Contains("--avcodec-hw=d3d11va", StringComparer.OrdinalIgnoreCase))
+            if (!gpuInstanceOptions.Contains("--vout=direct3d9", StringComparer.OrdinalIgnoreCase) ||
+                !gpuInstanceOptions.Contains("--avcodec-hw=dxva2", StringComparer.OrdinalIgnoreCase) ||
+                !gpuInstanceOptions.Contains("--embedded-video", StringComparer.OrdinalIgnoreCase) ||
+                !gpuInstanceOptions.Contains("--no-video-deco", StringComparer.OrdinalIgnoreCase) ||
+                gpuInstanceOptions.Contains("--vout=direct3d11", StringComparer.OrdinalIgnoreCase))
             {
-                throw new InvalidOperationException("GPU rendering mode must enable Direct3D11 video output and D3D11VA hardware decode.");
+                throw new InvalidOperationException("GPU rendering mode must use embedded Direct3D9/DXVA2 video output for the tile HWND.");
+            }
+
+            var gpuFfmpegArgs = new Collection<string>();
+            Method(sessionType, "AddCommonFfmpegInputArguments", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, [gpuFfmpegArgs, "rtsp", "rtsp://example.test/live"]);
+            if (OperatingSystem.IsWindows() && !ContainsArgumentPair(gpuFfmpegArgs, "-hwaccel", "d3d11va"))
+            {
+                throw new InvalidOperationException("GPU rendering mode must request D3D11VA hardware decode for FFmpeg playback.");
             }
         }
         finally
@@ -438,12 +510,10 @@ internal static class Program
     {
         var previousGpuEnv = Environment.GetEnvironmentVariable("IPMV_GPU_RENDERING");
         var previousForceEnv = Environment.GetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK");
-        var previousGpuAudioMetersEnv = Environment.GetEnvironmentVariable("IPMV_GPU_AUDIO_METERS");
         try
         {
             Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", "1");
             Environment.SetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK", null);
-            Environment.SetEnvironmentVariable("IPMV_GPU_AUDIO_METERS", null);
             var srtStream = new StreamConfig
             {
                 Id = "smoke-gpu-srt",
@@ -464,43 +534,81 @@ internal static class Program
                 AnalysisEnabled = true,
                 AudioMonitorEnabled = true
             };
+            var hlsAnalysisStream = new StreamConfig
+            {
+                Id = "smoke-gpu-hls",
+                Name = "Smoke GPU HLS",
+                Enabled = true,
+                InputUrl = "https://example.test/live.m3u8",
+                InputProtocol = "hls",
+                AnalysisEnabled = true,
+                AudioMonitorEnabled = true
+            };
+            var httpAnalysisStream = new StreamConfig
+            {
+                Id = "smoke-gpu-http",
+                Name = "Smoke GPU HTTP",
+                Enabled = true,
+                InputUrl = "http://example.test/live.mp4",
+                InputProtocol = "http",
+                AnalysisEnabled = true,
+                AudioMonitorEnabled = true
+            };
+            var rtmpAnalysisStream = new StreamConfig
+            {
+                Id = "smoke-gpu-rtmp",
+                Name = "Smoke GPU RTMP",
+                Enabled = true,
+                InputUrl = "rtmp://example.test/live/stream",
+                InputProtocol = "rtmp",
+                AnalysisEnabled = true,
+                AudioMonitorEnabled = true
+            };
             var shouldUseFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [rtspAnalysisStream])!;
             if (shouldUseFfmpeg)
             {
-                throw new InvalidOperationException("GPU rendering mode must keep analysis-enabled RTSP streams on LibVLC playback instead of FFmpeg bitmap playback.");
+                throw new InvalidOperationException("GPU rendering mode must keep analysis-enabled RTSP streams on embedded LibVLC GPU playback instead of FFmpeg bitmap playback.");
+            }
+
+            foreach (var nonSrtStream in new[] { hlsAnalysisStream, httpAnalysisStream, rtmpAnalysisStream })
+            {
+                var shouldUseNonSrtFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [nonSrtStream])!;
+                if (shouldUseNonSrtFfmpeg)
+                {
+                    throw new InvalidOperationException($"GPU rendering mode must keep non-SRT {nonSrtStream.InputProtocol.ToUpperInvariant()} streams on embedded LibVLC GPU playback by default.");
+                }
             }
 
             var shouldAttachAudioMonitor = (bool)Method(window.GetType(), "ShouldAttachAudioMonitor", BindingFlags.Static | BindingFlags.NonPublic)
                 .Invoke(null, [rtspAnalysisStream])!;
-            if (shouldAttachAudioMonitor)
-            {
-                throw new InvalidOperationException("GPU rendering mode must keep LibVLC audio callbacks disabled unless explicitly requested.");
-            }
-
-            Environment.SetEnvironmentVariable("IPMV_GPU_AUDIO_METERS", "1");
-            shouldAttachAudioMonitor = (bool)Method(window.GetType(), "ShouldAttachAudioMonitor", BindingFlags.Static | BindingFlags.NonPublic)
-                .Invoke(null, [rtspAnalysisStream])!;
             if (!shouldAttachAudioMonitor)
             {
-                throw new InvalidOperationException("IPMV_GPU_AUDIO_METERS=1 must re-enable GPU audio meter callbacks.");
+                throw new InvalidOperationException("GPU rendering mode must still attach audio callbacks so VU meters stay visible.");
             }
 
             var config = (LocalConfig)Field(window, "_config").GetValue(window)!;
             var previousGlobalMute = config.GlobalMute;
+            object? audioMonitor = null;
             try
             {
                 var disablePlaybackAudio = Method(window.GetType(), "ShouldDisableLibVlcPlaybackAudio", BindingFlags.Instance | BindingFlags.NonPublic);
+                var mutePlaybackAudio = Method(window.GetType(), "ShouldMuteLibVlcPlaybackAudio", BindingFlags.Static | BindingFlags.NonPublic);
+                audioMonitor = Activator.CreateInstance(DesktopType("AudioLevelMonitor"));
                 config.GlobalMute = true;
-                Environment.SetEnvironmentVariable("IPMV_GPU_AUDIO_METERS", null);
                 if ((bool)disablePlaybackAudio.Invoke(window, [rtspAnalysisStream, null])! != true)
                 {
-                    throw new InvalidOperationException("Muted GPU playback without audio callbacks must pass :no-audio to LibVLC.");
+                    throw new InvalidOperationException("GPU playback without audio callbacks must pass :no-audio to LibVLC.");
                 }
 
                 config.GlobalMute = false;
-                if ((bool)disablePlaybackAudio.Invoke(window, [rtspAnalysisStream, null])!)
+                if ((bool)disablePlaybackAudio.Invoke(window, [rtspAnalysisStream, audioMonitor])!)
                 {
-                    throw new InvalidOperationException("Unmuted GPU playback must keep audio available when the stream requests audio monitoring.");
+                    throw new InvalidOperationException("GPU playback with audio callbacks must keep decode available for VU meters.");
+                }
+
+                if ((bool)mutePlaybackAudio.Invoke(null, [rtspAnalysisStream])! != true)
+                {
+                    throw new InvalidOperationException("Monitoring playback must keep LibVLC speaker output muted.");
                 }
 
                 rtspAnalysisStream.AudioMonitorEnabled = false;
@@ -511,19 +619,25 @@ internal static class Program
             }
             finally
             {
+                DisposeReflective(audioMonitor);
                 rtspAnalysisStream.AudioMonitorEnabled = true;
                 config.GlobalMute = previousGlobalMute;
             }
 
-            if (FindOnPath("ffmpeg.exe") is not null || FindOnPath("ffmpeg") is not null)
+            var srtUsesFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [srtStream])!;
+            if (!srtUsesFfmpeg)
             {
-                var srtUsesFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [srtStream])!;
-                if (srtUsesFfmpeg)
-                {
-                    throw new InvalidOperationException("GPU rendering mode must keep SRT playback on LibVLC and move analysis to the sidecar.");
-                }
+                throw new InvalidOperationException("GPU rendering mode must keep SRT on FFmpeg/D3D11VA tile playback because LibVLC can hang on no-signal SRT endpoints.");
             }
 
+            Environment.SetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK", "1");
+            var forcedSrtUsesFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [srtStream])!;
+            if (!forcedSrtUsesFfmpeg)
+            {
+                throw new InvalidOperationException("IPMV_FORCE_FFMPEG_PLAYBACK must still force SRT through FFmpeg for diagnostics.");
+            }
+
+            Environment.SetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK", null);
             Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", null);
             var standardSrtUsesFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [srtStream])!;
             if (!standardSrtUsesFfmpeg)
@@ -535,7 +649,6 @@ internal static class Program
         {
             Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", previousGpuEnv);
             Environment.SetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK", previousForceEnv);
-            Environment.SetEnvironmentVariable("IPMV_GPU_AUDIO_METERS", previousGpuAudioMetersEnv);
         }
     }
 
@@ -626,17 +739,28 @@ internal static class Program
         }
 
         var firstView = views[0]!;
+        var track = (Border)meterViewType.GetProperty("Track")!.GetValue(firstView)!;
         var fill = (Border)meterViewType.GetProperty("Fill")!.GetValue(firstView)!;
         var fillClip = (RectangleGeometry)meterViewType.GetProperty("FillClip")!.GetValue(firstView)!;
         var peakMarker = (Border)meterViewType.GetProperty("PeakMarker")!.GetValue(firstView)!;
         var peakOffset = (TranslateTransform)meterViewType.GetProperty("PeakOffset")!.GetValue(firstView)!;
         var audioMeterHeight = Convert.ToDouble(typeof(MainWindow).GetField("AudioMeterHeight", BindingFlags.Static | BindingFlags.NonPublic)!
             .GetRawConstantValue(), CultureInfo.InvariantCulture);
+        var audioMeterBarWidth = Convert.ToDouble(typeof(MainWindow).GetField("AudioMeterBarWidth", BindingFlags.Static | BindingFlags.NonPublic)!
+            .GetRawConstantValue(), CultureInfo.InvariantCulture);
         if (Math.Abs(fill.Height - audioMeterHeight) > 0.001 ||
             fill.Clip is not RectangleGeometry ||
             peakMarker.RenderTransform is not TranslateTransform)
         {
             throw new InvalidOperationException("Audio meters must keep stable dimensions with clip/transform updates.");
+        }
+        if (track.Child is not Canvas trackCanvas ||
+            trackCanvas.Children.OfType<Border>().Count(child =>
+                Math.Abs(child.Width - audioMeterBarWidth) < 0.001 &&
+                child.Opacity >= 0.15 &&
+                child.Height > 1) < 3)
+        {
+            throw new InvalidOperationException("Audio meters must render visible green/yellow/red dB zones behind the level fill.");
         }
 
         meterViewType.GetProperty("TargetLevelRatio")!.SetValue(firstView, 0.75);
@@ -785,6 +909,104 @@ internal static class Program
         }
     }
 
+    private static void AssertPlaybackSurfaceClearsStaleVideo(MainWindow window)
+    {
+        var stream = new StreamConfig
+        {
+            Id = "smoke-clear-stale-video",
+            Name = "Smoke Clear Stale Video",
+            Enabled = true,
+            InputUrl = "rtsp://example.invalid/live",
+            AlertProfileId = "default"
+        };
+        var lastVideoPresentedAt = (IDictionary)Field(window, "_lastVideoPresentedAt").GetValue(window)!;
+        var shouldClearSurface = Method(typeof(MainWindow), "ShouldClearPlaybackSurface", BindingFlags.Instance | BindingFlags.NonPublic);
+        var isFreshForSurface = Method(typeof(MainWindow), "IsPlaybackVideoFreshForSurface", BindingFlags.Instance | BindingFlags.NonPublic);
+        var playingSnapshot = CreatePlaybackSnapshot("playing", displayedPictures: 12);
+
+        try
+        {
+            lastVideoPresentedAt[stream.Id] = DateTimeOffset.UtcNow.AddSeconds(-10);
+            if ((bool)isFreshForSurface.Invoke(window, [stream, playingSnapshot])! ||
+                (bool)shouldClearSurface.Invoke(window, [stream, playingSnapshot])! != true)
+            {
+                throw new InvalidOperationException("Stale presented video must be treated as a clear/no-signal surface.");
+            }
+
+            lastVideoPresentedAt[stream.Id] = DateTimeOffset.UtcNow;
+            if (!(bool)isFreshForSurface.Invoke(window, [stream, playingSnapshot])! ||
+                (bool)shouldClearSurface.Invoke(window, [stream, playingSnapshot])!)
+            {
+                throw new InvalidOperationException("Fresh presented video should remain visible.");
+            }
+
+            var endedSnapshot = CreatePlaybackSnapshot("ended", displayedPictures: 12);
+            if ((bool)shouldClearSurface.Invoke(window, [stream, endedSnapshot])! != true)
+            {
+                throw new InvalidOperationException("Ended playback must clear the displayed video surface.");
+            }
+        }
+        finally
+        {
+            lastVideoPresentedAt.Remove(stream.Id);
+        }
+    }
+
+    private static void AssertTileVideoSurfaceHasDedicatedFrameRows(MainWindow window)
+    {
+        var stream = new StreamConfig
+        {
+            Id = "smoke-tile-frame-clip",
+            Name = "Smoke Tile Frame Clip",
+            Enabled = true,
+            InputUrl = "rtsp://example.invalid/live"
+        };
+        var createTile = Method(typeof(MainWindow), "CreateTile", BindingFlags.Instance | BindingFlags.NonPublic);
+        var removeRenderedTileBindings = Method(typeof(MainWindow), "RemoveRenderedTileBindings", BindingFlags.Instance | BindingFlags.NonPublic);
+        var surfaceHosts = (IDictionary)Field(window, "_tileSurfaceHosts").GetValue(window)!;
+        var statusFrames = (IDictionary)Field(window, "_tileStatusFrames").GetValue(window)!;
+        const int tileIndex = 987;
+
+        try
+        {
+            _ = (Border)createTile.Invoke(window, [stream, tileIndex])!;
+            var surfaceHost = (Grid)surfaceHosts[stream.Id]!;
+            if (!surfaceHost.ClipToBounds ||
+                Grid.GetRow(surfaceHost) != 1 ||
+                Grid.GetColumn(surfaceHost) != 1)
+            {
+                throw new InvalidOperationException("Video surface host must be clipped and placed inside the dedicated inner video row.");
+            }
+
+            var videoFrame = (Grid)surfaceHost.Parent;
+            var frameThickness = Convert.ToDouble(typeof(MainWindow).GetField("TileFrameThickness", BindingFlags.Static | BindingFlags.NonPublic)!
+                .GetRawConstantValue(), CultureInfo.InvariantCulture);
+            if (videoFrame.RowDefinitions.Count != 3 ||
+                videoFrame.RowDefinitions[0].Height.Value != frameThickness ||
+                videoFrame.RowDefinitions[2].Height.Value != frameThickness)
+            {
+                throw new InvalidOperationException("Video frame must reserve top and bottom rows outside the HWND video surface.");
+            }
+
+            var frames = (IList)statusFrames[stream.Id]!;
+            var topFrame = (Border)frames[0]!;
+            var leftFrame = (Border)frames[1]!;
+            var rightFrame = (Border)frames[2]!;
+            var bottomFrame = (Border)frames[3]!;
+            if (Grid.GetRow(topFrame) != 0 ||
+                Grid.GetRow(bottomFrame) != 2 ||
+                Grid.GetRowSpan(leftFrame) != 3 ||
+                Grid.GetRowSpan(rightFrame) != 3)
+            {
+                throw new InvalidOperationException("Tile frame pieces must not overlap the video surface row.");
+            }
+        }
+        finally
+        {
+            removeRenderedTileBindings.Invoke(window, [tileIndex]);
+        }
+    }
+
     private static object CreatePlaybackSnapshot(string state, int displayedPictures)
     {
         var snapshotType = DesktopType("PlaybackSnapshot");
@@ -827,6 +1049,13 @@ internal static class Program
             () => presentedCallbacks++);
         try
         {
+            var targetFps = Convert.ToDouble(sessionType.GetField("TargetFps", BindingFlags.Static | BindingFlags.NonPublic)!
+                .GetRawConstantValue(), CultureInfo.InvariantCulture);
+            if (targetFps < 24)
+            {
+                throw new InvalidOperationException($"FFmpeg tile playback target FPS is too low for live monitoring: {targetFps:0.###}.");
+            }
+
             var frameBytes = (int)(sessionType.GetField("FrameBytes", BindingFlags.Static | BindingFlags.NonPublic)!
                 .GetRawConstantValue() ?? throw new InvalidOperationException("FrameBytes constant was unavailable."));
             var frame = new byte[frameBytes];
@@ -889,6 +1118,113 @@ internal static class Program
         }
         finally
         {
+            DisposeReflective(session);
+        }
+    }
+
+    private static void AssertImmediateBlackFrameRaisesAlert(MainWindow window)
+    {
+        var config = (LocalConfig)Field(window, "_config").GetValue(window)!;
+        var originalActiveLayoutId = config.ActiveLayoutId;
+        var originalServerSyncEnabled = config.ServerSyncEnabled;
+        var stream = new StreamConfig
+        {
+            Id = "smoke-immediate-black",
+            Name = "Smoke Immediate Black",
+            Enabled = true,
+            InputUrl = "file:///not-started",
+            InputProtocol = "file",
+            AnalysisEnabled = true,
+            AudioMonitorEnabled = false,
+            AlertProfileId = config.AlertProfiles.FirstOrDefault()?.Id ?? "default"
+        };
+        var layout = new LayoutConfig
+        {
+            Id = "smoke-immediate-black-layout",
+            Name = "Smoke immediate black layout",
+            Kind = "2x2",
+            Tiles =
+            [
+                new LayoutTileConfig { Index = 0, StreamId = stream.Id, Row = 0, Column = 0 },
+                new LayoutTileConfig { Index = 1, StreamId = "", Row = 0, Column = 1 },
+                new LayoutTileConfig { Index = 2, StreamId = "", Row = 1, Column = 0 },
+                new LayoutTileConfig { Index = 3, StreamId = "", Row = 1, Column = 1 }
+            ]
+        };
+        var sessionType = DesktopType("FfmpegPlaybackSession");
+        object? session = null;
+
+        try
+        {
+            config.ServerSyncEnabled = false;
+            config.Streams.Add(stream);
+            config.Layouts.Add(layout);
+            config.ActiveLayoutId = layout.Id;
+
+            var queueImmediate = MethodWithParameterTypes(
+                typeof(MainWindow),
+                "QueueImmediateVideoAlertEvaluation",
+                [typeof(string), typeof(bool)],
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            session = CreateFfmpegSession(
+                sessionType,
+                "ffmpeg",
+                stream.InputUrl,
+                stream.InputProtocol,
+                () => queueImmediate.Invoke(window, [stream.Id, true]));
+
+            Field(session, "_state").SetValue(session, "playing");
+            var ffmpegSessions = (IDictionary)Field(window, "_ffmpegPlaybackSessions").GetValue(window)!;
+            var videoMonitors = (IDictionary)Field(window, "_videoMonitors").GetValue(window)!;
+            var playbackSnapshots = (IDictionary)Field(window, "_playbackSnapshots").GetValue(window)!;
+            ffmpegSessions[stream.Id] = session;
+            videoMonitors[stream.Id] = session;
+
+            var frameBytes = (int)(sessionType.GetField("FrameBytes", BindingFlags.Static | BindingFlags.NonPublic)!
+                .GetRawConstantValue() ?? throw new InvalidOperationException("FrameBytes constant was unavailable."));
+            var blackFrame = new byte[frameBytes];
+            var whiteFrame = new byte[frameBytes];
+            Array.Fill(whiteFrame, (byte)255);
+            var updateSnapshot = Method(sessionType, "UpdateSnapshot");
+
+            updateSnapshot.Invoke(session, [blackFrame]);
+            var pendingBlackFrames = (IDictionary)Field(window, "_pendingImmediateBlackFrameDetections").GetValue(window)!;
+            if (!pendingBlackFrames.Contains(stream.Id))
+            {
+                throw new InvalidOperationException("Black-frame callback did not latch the immediate video.black evidence.");
+            }
+
+            playbackSnapshots[stream.Id] = Method(sessionType, "CurrentPlaybackSnapshot").Invoke(session, []);
+            updateSnapshot.Invoke(session, [whiteFrame]);
+            playbackSnapshots[stream.Id] = Method(sessionType, "CurrentPlaybackSnapshot").Invoke(session, []);
+            Pump(window, 500);
+
+            var raised = config.AlertHistory.Any(alert =>
+                string.Equals(alert.StreamId, stream.Id, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(alert.Type, "video.black", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(alert.Status, "open", StringComparison.OrdinalIgnoreCase));
+            if (!raised)
+            {
+                var activeStreams = ((IEnumerable)MethodWithParameterCount(typeof(MainWindow), "ActiveLayoutStreams", 0)
+                    .Invoke(window, [])!).Cast<StreamConfig>().Select(item => item.Id);
+                throw new InvalidOperationException($"A single black frame must raise video.black even when the next frame is already non-black. active={string.Join(",", activeStreams)} pending={pendingBlackFrames.Contains(stream.Id)} alerts={config.AlertHistory.Count}");
+            }
+        }
+        finally
+        {
+            config.ServerSyncEnabled = originalServerSyncEnabled;
+            config.ActiveLayoutId = originalActiveLayoutId;
+            config.Streams.Remove(stream);
+            config.Layouts.Remove(layout);
+            foreach (var alert in config.AlertHistory.Where(alert => string.Equals(alert.StreamId, stream.Id, StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                config.AlertHistory.Remove(alert);
+            }
+
+            ((IDictionary)Field(window, "_ffmpegPlaybackSessions").GetValue(window)!).Remove(stream.Id);
+            ((IDictionary)Field(window, "_videoMonitors").GetValue(window)!).Remove(stream.Id);
+            ((IDictionary)Field(window, "_playbackSnapshots").GetValue(window)!).Remove(stream.Id);
+            ((IDictionary)Field(window, "_issueSince").GetValue(window)!).Remove($"{stream.Id}:video.black");
             DisposeReflective(session);
         }
     }
@@ -1213,6 +1549,14 @@ internal static class Program
             .Invoke(window, [])!).Cast<StreamConfig>().ToList();
         var stream = activeStreams.FirstOrDefault()
             ?? throw new InvalidOperationException("No active layout stream was available for tile chrome smoke.");
+        ((IDictionary)Field(window, "_issueSince").GetValue(window)!).Clear();
+        var config = (LocalConfig)Field(window, "_config").GetValue(window)!;
+        foreach (var alert in config.AlertHistory.Where(alert => string.Equals(alert.StreamId, stream.Id, StringComparison.OrdinalIgnoreCase)).ToList())
+        {
+            config.AlertHistory.Remove(alert);
+        }
+        stream.AnalysisEnabled = false;
+
         var sessionType = DesktopType("FfmpegPlaybackSession");
         var session = CreateFfmpegSession(sessionType, "ffmpeg", "file:///not-started");
         try
@@ -1226,13 +1570,16 @@ internal static class Program
 
             var ffmpegSessions = (IDictionary)Field(window, "_ffmpegPlaybackSessions").GetValue(window)!;
             var playbackSnapshots = (IDictionary)Field(window, "_playbackSnapshots").GetValue(window)!;
+            var lastFramePresentedTicks = Field(session, "_lastFramePresentedTicks");
             ffmpegSessions[stream.Id] = session;
+            lastFramePresentedTicks.SetValue(session, DateTime.UtcNow.Ticks);
             playbackSnapshots[stream.Id] = Method(sessionType, "CurrentPlaybackSnapshot").Invoke(session, []);
             Method(typeof(MainWindow), "UpdateTileChrome", BindingFlags.Instance | BindingFlags.NonPublic)
                 .Invoke(window, [stream, null]);
 
             Method(sessionType, "QueueBitmapFrame").Invoke(session, [frame, DateTime.UtcNow.Ticks]);
             Pump(window, 150);
+            lastFramePresentedTicks.SetValue(session, DateTime.UtcNow.Ticks);
             playbackSnapshots[stream.Id] = Method(sessionType, "CurrentPlaybackSnapshot").Invoke(session, []);
             Method(typeof(MainWindow), "UpdateTileChrome", BindingFlags.Instance | BindingFlags.NonPublic)
                 .Invoke(window, [stream, null]);
@@ -1246,6 +1593,7 @@ internal static class Program
 
             Method(sessionType, "QueueBitmapFrame").Invoke(session, [frame, DateTime.UtcNow.Ticks]);
             Pump(window, 300);
+            lastFramePresentedTicks.SetValue(session, DateTime.UtcNow.Ticks);
             playbackSnapshots[stream.Id] = Method(sessionType, "CurrentPlaybackSnapshot").Invoke(session, []);
             Method(typeof(MainWindow), "UpdateTileChrome", BindingFlags.Instance | BindingFlags.NonPublic)
                 .Invoke(window, [stream, null]);
@@ -1253,7 +1601,7 @@ internal static class Program
             var statusKeyAfter = (string?)statusKeys[stream.Id];
             if (!string.Equals(chromeKeyBefore, chromeKeyAfter, StringComparison.Ordinal))
             {
-                throw new InvalidOperationException("Video freshness text changes should not repaint tile chrome.");
+                throw new InvalidOperationException($"Video freshness text changes should not repaint tile chrome: before={chromeKeyBefore}, after={chromeKeyAfter}.");
             }
             if (string.Equals(statusKeyBefore, statusKeyAfter, StringComparison.Ordinal))
             {
@@ -1432,12 +1780,15 @@ internal static class Program
             Method(sessionType, "Start").Invoke(sessionB, []);
             Pump(null, 250);
 
-            senderA = StartFfmpegProcess(ffmpeg, "-re", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=540:sample_rate=48000", "-t", "6", "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac", "-f", "mpegts", $"srt://127.0.0.1:{portA}?mode=caller&pkt_size=1316");
-            senderB = StartFfmpegProcess(ffmpeg, "-re", "-f", "lavfi", "-i", "smptebars=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=960:sample_rate=48000", "-t", "6", "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac", "-f", "mpegts", $"srt://127.0.0.1:{portB}?mode=caller&pkt_size=1316");
+            senderA = StartFfmpegProcess(ffmpeg, "-re", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=540:sample_rate=48000", "-t", "12", "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac", "-f", "mpegts", $"srt://127.0.0.1:{portA}?mode=caller&pkt_size=1316");
+            senderB = StartFfmpegProcess(ffmpeg, "-re", "-f", "lavfi", "-i", "smptebars=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=960:sample_rate=48000", "-t", "12", "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac", "-f", "mpegts", $"srt://127.0.0.1:{portB}?mode=caller&pkt_size=1316");
 
             var hasFrame = sessionType.GetProperty("HasFrame")!;
             var hasPresentedFrame = sessionType.GetProperty("HasPresentedFrame")!;
+            var bitmapFramesPresented = sessionType.GetProperty("BitmapFramesPresented")!;
+            var observedPresentedFps = sessionType.GetProperty("ObservedPresentedFps")!;
             var state = sessionType.GetProperty("State")!;
+            var currentPlaybackSnapshot = Method(sessionType, "CurrentPlaybackSnapshot");
             var tryAudio = Method(sessionType, "TryGetAudioSnapshot");
             var gotFrameA = false;
             var gotFrameB = false;
@@ -1461,11 +1812,39 @@ internal static class Program
                 }
             }
 
-            Console.WriteLine($"srt_loopback_a state={state.GetValue(sessionA)} frame={gotFrameA} presented={gotPresentedFrameA} audio={gotAudioA}");
-            Console.WriteLine($"srt_loopback_b state={state.GetValue(sessionB)} frame={gotFrameB} presented={gotPresentedFrameB} audio={gotAudioB}");
             if (!gotFrameA || !gotFrameB || !gotPresentedFrameA || !gotPresentedFrameB || !gotAudioA || !gotAudioB)
             {
+                Console.WriteLine($"srt_loopback_a state={state.GetValue(sessionA)} frame={gotFrameA} presented={gotPresentedFrameA} audio={gotAudioA}");
+                Console.WriteLine($"srt_loopback_b state={state.GetValue(sessionB)} frame={gotFrameB} presented={gotPresentedFrameB} audio={gotAudioB}");
                 throw new InvalidOperationException("Two SRT loopback playback/analysis sessions did not run concurrently.");
+            }
+
+            var presentedBeforeA = (long)bitmapFramesPresented.GetValue(sessionA)!;
+            var presentedBeforeB = (long)bitmapFramesPresented.GetValue(sessionB)!;
+            var measurementStart = DateTime.UtcNow;
+            var measurementDeadline = measurementStart.AddMilliseconds(SmoothFpsMeasurementMs);
+            while (DateTime.UtcNow < measurementDeadline)
+            {
+                Pump(null, 100);
+            }
+
+            var elapsedSeconds = Math.Max(0.001, (DateTime.UtcNow - measurementStart).TotalSeconds);
+            var measuredPresentedFpsA = ((long)bitmapFramesPresented.GetValue(sessionA)! - presentedBeforeA) / elapsedSeconds;
+            var measuredPresentedFpsB = ((long)bitmapFramesPresented.GetValue(sessionB)! - presentedBeforeB) / elapsedSeconds;
+            var observedPresentedFpsA = (double)observedPresentedFps.GetValue(sessionA)!;
+            var observedPresentedFpsB = (double)observedPresentedFps.GetValue(sessionB)!;
+            var snapshotFpsA = SnapshotFps(currentPlaybackSnapshot.Invoke(sessionA, [])!);
+            var snapshotFpsB = SnapshotFps(currentPlaybackSnapshot.Invoke(sessionB, [])!);
+            Console.WriteLine($"srt_loopback_a state={state.GetValue(sessionA)} frame={gotFrameA} presented={gotPresentedFrameA} audio={gotAudioA} measuredFps={measuredPresentedFpsA:0.0} observedFps={observedPresentedFpsA:0.0} snapshotFps={snapshotFpsA:0.0}");
+            Console.WriteLine($"srt_loopback_b state={state.GetValue(sessionB)} frame={gotFrameB} presented={gotPresentedFrameB} audio={gotAudioB} measuredFps={measuredPresentedFpsB:0.0} observedFps={observedPresentedFpsB:0.0} snapshotFps={snapshotFpsB:0.0}");
+            if (measuredPresentedFpsA < MinimumSmoothPresentedFps ||
+                measuredPresentedFpsB < MinimumSmoothPresentedFps ||
+                observedPresentedFpsA < MinimumSmoothPresentedFps ||
+                observedPresentedFpsB < MinimumSmoothPresentedFps ||
+                snapshotFpsA < MinimumSmoothPresentedFps ||
+                snapshotFpsB < MinimumSmoothPresentedFps)
+            {
+                throw new InvalidOperationException($"SRT loopback presented FPS must stay above {MinimumSmoothPresentedFps:0.0} fps.");
             }
         }
         finally
@@ -1475,6 +1854,11 @@ internal static class Program
             StopProcess(senderA);
             StopProcess(senderB);
         }
+    }
+
+    private static double SnapshotFps(object snapshot)
+    {
+        return Convert.ToDouble(snapshot.GetType().GetProperty("Fps")!.GetValue(snapshot), CultureInfo.InvariantCulture);
     }
 
     private static List<string> CandidateList(MethodInfo build, string inputUrl, string protocol)

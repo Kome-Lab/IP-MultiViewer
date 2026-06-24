@@ -7,6 +7,7 @@ namespace IPMultiViewer.Desktop;
 public partial class AlertHistoryWindow : Window
 {
     private readonly MainWindow _owner;
+    private bool _allowClose;
 
     public AlertHistoryWindow(MainWindow owner)
     {
@@ -43,7 +44,18 @@ public partial class AlertHistoryWindow : Window
 
     private void AlertHistoryWindow_Closing(object sender, CancelEventArgs e)
     {
+        if (_allowClose)
+        {
+            return;
+        }
+
         e.Cancel = true;
         Hide();
+    }
+
+    internal void ForceClose()
+    {
+        _allowClose = true;
+        Close();
     }
 }
