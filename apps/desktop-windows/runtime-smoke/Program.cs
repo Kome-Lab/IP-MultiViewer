@@ -34,6 +34,7 @@ internal static class Program
         var previousLongDataDir = Environment.GetEnvironmentVariable("IPMULTIVIEWER_DATA_DIR");
         var previousLongConfigDir = Environment.GetEnvironmentVariable("IPMULTIVIEWER_CONFIG_DIR");
         var previousLongLogDir = Environment.GetEnvironmentVariable("IPMULTIVIEWER_LOG_DIR");
+        var previousDisableInitialPlayback = Environment.GetEnvironmentVariable("IPMV_DISABLE_INITIAL_PLAYBACK");
         var smokeBaseDir = Path.Combine(Path.GetTempPath(), $"ipmv-runtime-smoke-{Guid.NewGuid():N}");
         try
         {
@@ -44,7 +45,9 @@ internal static class Program
             Environment.SetEnvironmentVariable("IPMULTIVIEWER_DATA_DIR", null);
             Environment.SetEnvironmentVariable("IPMULTIVIEWER_CONFIG_DIR", null);
             Environment.SetEnvironmentVariable("IPMULTIVIEWER_LOG_DIR", null);
+            Environment.SetEnvironmentVariable("IPMV_DISABLE_INITIAL_PLAYBACK", "1");
             AssertQueuedConfigPersistence(smokeBaseDir);
+            WriteOfflineWindowFixture();
             using var appScope = new WpfAppScope();
             var window = new MainWindow
             {
@@ -55,6 +58,7 @@ internal static class Program
             };
             window.Show();
             Pump(window, 500);
+            StopWindowTimers(window);
 
             AssertWindowIconIsSet(window);
             AssertLayoutSwitchDoesNotCrash(window);
@@ -67,15 +71,20 @@ internal static class Program
             AssertLowLatencyPlaybackOptions();
             AssertPlaybackRestartBackoff();
             AssertGpuRenderingUsesLibVlcPlayback(window);
+            Console.WriteLine("playback_routing_smoke_ok");
             AssertPlaybackStatusWaitsForPresentedVideo(window);
             AssertPlaybackSurfaceClearsStaleVideo(window);
             AssertAudioLevelMonitorThrottlesCallbacks();
             AssertSharedSidecarAnalysisMonitors(window);
             AssertFfmpegSnapshotSampling();
             AssertImmediateBlackFrameRaisesAlert(window);
+            Console.WriteLine("alert_evaluation_smoke_ok");
             AssertFfmpegSidecarAnalysisSnapshotSampling();
+            Console.WriteLine("sidecar_analysis_contract_smoke_ok");
             AssertFfmpegAudioStatsParser();
+            Console.WriteLine("audio_stats_contract_smoke_ok");
             AssertMissingVideoPtsFallbackIsBounded();
+            Console.WriteLine("offline_media_contract_smoke_ok");
             if (string.Equals(
                     Environment.GetEnvironmentVariable("IPMV_SKIP_MEDIA_INTEGRATION_QA"),
                     "1",
@@ -107,6 +116,7 @@ internal static class Program
             Environment.SetEnvironmentVariable("IPMULTIVIEWER_DATA_DIR", previousLongDataDir);
             Environment.SetEnvironmentVariable("IPMULTIVIEWER_CONFIG_DIR", previousLongConfigDir);
             Environment.SetEnvironmentVariable("IPMULTIVIEWER_LOG_DIR", previousLongLogDir);
+            Environment.SetEnvironmentVariable("IPMV_DISABLE_INITIAL_PLAYBACK", previousDisableInitialPlayback);
             try
             {
                 if (Directory.Exists(smokeBaseDir))
@@ -119,6 +129,25 @@ internal static class Program
                 // Best effort cleanup; a failed delete should not mask the smoke result.
             }
         }
+    }
+
+    private static void WriteOfflineWindowFixture()
+    {
+        var config = LocalConfigStore.CreateDefault();
+        foreach (var stream in config.Streams)
+        {
+            stream.Enabled = false;
+        }
+
+        config.ServerSyncEnabled = false;
+        config.AlertSoundEnabled = false;
+        LocalConfigStore.Save(config);
+    }
+
+    private static void StopWindowTimers(MainWindow window)
+    {
+        ((DispatcherTimer)Field(window, "_playbackTimer").GetValue(window)!).Stop();
+        ((DispatcherTimer)Field(window, "_audioMeterTimer").GetValue(window)!).Stop();
     }
 
     private static void AssertConfigStorePathOverrides()
@@ -461,16 +490,53 @@ internal static class Program
                 throw new InvalidOperationException("StartVideoMonitor created a standalone source connection.");
             }
 
-            var shouldUse = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [stream])!;
-            if (!shouldUse)
+            var shouldRoute = (bool)Method(
+                    window.GetType(),
+                    "ShouldRouteThroughFfmpegPlayback",
+                    BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, [stream])!;
+            if (!shouldRoute)
             {
                 throw new InvalidOperationException("Analysis-enabled streams must route through shared FFmpeg playback in standard rendering mode.");
             }
+
+            AssertFfmpegAvailabilityGatesRouting(window, stream);
         }
         finally
         {
             Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", previousGpuEnv);
             Environment.SetEnvironmentVariable("IPMULTIVIEWER_GPU_RENDERING", previousGpuLongEnv);
+        }
+    }
+
+    private static void AssertFfmpegAvailabilityGatesRouting(MainWindow window, StreamConfig stream)
+    {
+        var previousFfmpeg = Environment.GetEnvironmentVariable("FFMPEG_BIN");
+        var previousPath = Environment.GetEnvironmentVariable("PATH");
+        var sentinel = Path.Combine(LocalConfigStore.ConfigDirectory, "ffmpeg-routing-sentinel.exe");
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(sentinel)!);
+            File.WriteAllBytes(sentinel, []);
+            Environment.SetEnvironmentVariable("FFMPEG_BIN", sentinel);
+            var shouldUse = Method(window.GetType(), "ShouldUseFfmpegPlayback");
+            if (!(bool)shouldUse.Invoke(window, [stream])!)
+            {
+                throw new InvalidOperationException("Available FFmpeg did not enable the required playback route.");
+            }
+
+            Environment.SetEnvironmentVariable("FFMPEG_BIN", $"{sentinel}.missing");
+            Environment.SetEnvironmentVariable("PATH", string.Empty);
+            if ((bool)shouldUse.Invoke(window, [stream])!)
+            {
+                throw new InvalidOperationException("Unavailable FFmpeg incorrectly enabled FFmpeg playback.");
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("FFMPEG_BIN", previousFfmpeg);
+            Environment.SetEnvironmentVariable("PATH", previousPath);
+            File.Delete(sentinel);
         }
     }
 
@@ -662,6 +728,10 @@ internal static class Program
         {
             Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", "1");
             Environment.SetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK", null);
+            var shouldRouteThroughFfmpeg = Method(
+                window.GetType(),
+                "ShouldRouteThroughFfmpegPlayback",
+                BindingFlags.Static | BindingFlags.NonPublic);
             var srtStream = new StreamConfig
             {
                 Id = "smoke-gpu-srt",
@@ -712,7 +782,7 @@ internal static class Program
                 AnalysisEnabled = true,
                 AudioMonitorEnabled = true
             };
-            var shouldUseFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [rtspAnalysisStream])!;
+            var shouldUseFfmpeg = (bool)shouldRouteThroughFfmpeg.Invoke(null, [rtspAnalysisStream])!;
             if (shouldUseFfmpeg)
             {
                 throw new InvalidOperationException("GPU rendering mode must keep analysis-enabled RTSP streams on embedded LibVLC GPU playback instead of FFmpeg bitmap playback.");
@@ -720,7 +790,7 @@ internal static class Program
 
             foreach (var nonSrtStream in new[] { hlsAnalysisStream, httpAnalysisStream, rtmpAnalysisStream })
             {
-                var shouldUseNonSrtFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [nonSrtStream])!;
+                var shouldUseNonSrtFfmpeg = (bool)shouldRouteThroughFfmpeg.Invoke(null, [nonSrtStream])!;
                 if (shouldUseNonSrtFfmpeg)
                 {
                     throw new InvalidOperationException($"GPU rendering mode must keep non-SRT {nonSrtStream.InputProtocol.ToUpperInvariant()} streams on embedded LibVLC GPU playback by default.");
@@ -772,14 +842,14 @@ internal static class Program
                 config.GlobalMute = previousGlobalMute;
             }
 
-            var srtUsesFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [srtStream])!;
+            var srtUsesFfmpeg = (bool)shouldRouteThroughFfmpeg.Invoke(null, [srtStream])!;
             if (!srtUsesFfmpeg)
             {
                 throw new InvalidOperationException("GPU rendering mode must keep SRT on FFmpeg/D3D11VA tile playback because LibVLC can hang on no-signal SRT endpoints.");
             }
 
             Environment.SetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK", "1");
-            var forcedSrtUsesFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [srtStream])!;
+            var forcedSrtUsesFfmpeg = (bool)shouldRouteThroughFfmpeg.Invoke(null, [srtStream])!;
             if (!forcedSrtUsesFfmpeg)
             {
                 throw new InvalidOperationException("IPMV_FORCE_FFMPEG_PLAYBACK must still force SRT through FFmpeg for diagnostics.");
@@ -787,7 +857,7 @@ internal static class Program
 
             Environment.SetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK", null);
             Environment.SetEnvironmentVariable("IPMV_GPU_RENDERING", null);
-            var standardSrtUsesFfmpeg = (bool)Method(window.GetType(), "ShouldUseFfmpegPlayback").Invoke(window, [srtStream])!;
+            var standardSrtUsesFfmpeg = (bool)shouldRouteThroughFfmpeg.Invoke(null, [srtStream])!;
             if (!standardSrtUsesFfmpeg)
             {
                 throw new InvalidOperationException("Standard rendering mode should still use the FFmpeg fallback for SRT streams.");
@@ -1804,20 +1874,26 @@ internal static class Program
                 "WaitForVideoPtsAsync",
                 BindingFlags.Static | BindingFlags.NonPublic);
             var firstWait = Stopwatch.StartNew();
-            var firstResult = ((System.Threading.Tasks.Task<double>)waitForPts.Invoke(
-                null,
-                [context, 0L, CancellationToken.None])!).GetAwaiter().GetResult();
+            var firstResult = AwaitVideoPtsWithDeadline(
+                waitForPts,
+                context,
+                0L,
+                "initial missing PTS");
             firstWait.Stop();
-            if (!double.IsNaN(firstResult) || firstWait.Elapsed < TimeSpan.FromMilliseconds(40))
+            if (!double.IsNaN(firstResult) ||
+                firstWait.Elapsed < TimeSpan.FromMilliseconds(40) ||
+                firstWait.Elapsed > TimeSpan.FromMilliseconds(500))
             {
                 throw new InvalidOperationException(
-                    $"Initial missing video PTS did not use the bounded wait: result={firstResult}, elapsed={firstWait.Elapsed.TotalMilliseconds:0.0}ms.");
+                    $"Initial missing video PTS did not use the 40-500ms bounded wait: result={firstResult}, elapsed={firstWait.Elapsed.TotalMilliseconds:0.0}ms.");
             }
 
             var fallbackWait = Stopwatch.StartNew();
-            var fallbackResult = ((System.Threading.Tasks.Task<double>)waitForPts.Invoke(
-                null,
-                [context, 1L, CancellationToken.None])!).GetAwaiter().GetResult();
+            var fallbackResult = AwaitVideoPtsWithDeadline(
+                waitForPts,
+                context,
+                1L,
+                "disabled-wait fallback");
             fallbackWait.Stop();
             if (!double.IsNaN(fallbackResult) || fallbackWait.Elapsed > TimeSpan.FromMilliseconds(30))
             {
@@ -1844,13 +1920,17 @@ internal static class Program
                     $"Video PTS fallback buffers were unbounded: entries={bufferedCount}, wakeSignals={wakeCount}.");
             }
 
-            var recoveredResult = ((System.Threading.Tasks.Task<double>)waitForPts.Invoke(
-                null,
-                [context, 1001L, CancellationToken.None])!).GetAwaiter().GetResult();
+            var recoveredResult = AwaitVideoPtsWithDeadline(
+                waitForPts,
+                context,
+                1001L,
+                "PTS recovery");
             AssertNear(recoveredResult, 1001 / 30.0, "video PTS fallback recovery");
-            var extrapolatedResult = ((System.Threading.Tasks.Task<double>)waitForPts.Invoke(
-                null,
-                [context, 1002L, CancellationToken.None])!).GetAwaiter().GetResult();
+            var extrapolatedResult = AwaitVideoPtsWithDeadline(
+                waitForPts,
+                context,
+                1002L,
+                "bounded PTS extrapolation");
             AssertNear(extrapolatedResult, 1002 / 30.0, "bounded video PTS extrapolation");
 
             var unsupportedContext = Activator.CreateInstance(
@@ -1862,9 +1942,11 @@ internal static class Program
             try
             {
                 var unsupportedWait = Stopwatch.StartNew();
-                var unsupportedResult = ((System.Threading.Tasks.Task<double>)waitForPts.Invoke(
-                    null,
-                    [unsupportedContext, 0L, CancellationToken.None])!).GetAwaiter().GetResult();
+                var unsupportedResult = AwaitVideoPtsWithDeadline(
+                    waitForPts,
+                    unsupportedContext,
+                    0L,
+                    "unsupported PTS path");
                 unsupportedWait.Stop();
                 if (!double.IsNaN(unsupportedResult) || unsupportedWait.Elapsed > TimeSpan.FromMilliseconds(30))
                 {
@@ -1881,6 +1963,26 @@ internal static class Program
         {
             cts.Cancel();
             DisposeReflective(context);
+        }
+    }
+
+    private static double AwaitVideoPtsWithDeadline(
+        MethodInfo waitForPts,
+        object context,
+        long ordinal,
+        string phase)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        try
+        {
+            var task = (System.Threading.Tasks.Task<double>)waitForPts.Invoke(
+                null,
+                [context, ordinal, timeout.Token])!;
+            return task.WaitAsync(TimeSpan.FromSeconds(3)).GetAwaiter().GetResult();
+        }
+        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+        {
+            throw new InvalidOperationException($"Video PTS contract timed out during {phase}.", ex);
         }
     }
 

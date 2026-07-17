@@ -195,7 +195,10 @@ public partial class MainWindow : Window
         CompositionTarget.Rendering += AudioMeterCompositionTarget_Rendering;
         _playbackTimer.Start();
         _audioMeterTimer.Start();
-        QueueInitialPlaybackStart();
+        if (!InitialPlaybackDisabled())
+        {
+            QueueInitialPlaybackStart();
+        }
     }
 
     private void LoadConfig()
@@ -1650,6 +1653,12 @@ public partial class MainWindow : Window
         }), DispatcherPriority.ApplicationIdle);
     }
 
+    private static bool InitialPlaybackDisabled() =>
+        string.Equals(
+            Environment.GetEnvironmentVariable("IPMV_DISABLE_INITIAL_PLAYBACK"),
+            "1",
+            StringComparison.OrdinalIgnoreCase);
+
     private async System.Threading.Tasks.Task StartPlaybackForActiveLayoutStreamsAsync(string actionLabel, bool restartLoaded)
     {
         if (_playbackStartInFlight)
@@ -2622,6 +2631,11 @@ public partial class MainWindow : Window
             return false;
         }
 
+        return ShouldRouteThroughFfmpegPlayback(stream);
+    }
+
+    private static bool ShouldRouteThroughFfmpegPlayback(StreamConfig stream)
+    {
         if (ForceFfmpegPlaybackEnabled())
         {
             return true;
@@ -6967,7 +6981,7 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
             var elapsed = Stopwatch.GetElapsedTime(startedAt);
             var remaining = VideoPtsWaitTimeout - elapsed;
             if (remaining <= TimeSpan.Zero ||
-                !await outputPipes.VideoPtsAvailable.WaitAsync(remaining, token))
+                !await outputPipes.VideoPtsAvailable.WaitAsync(remaining, token).ConfigureAwait(false))
             {
                 Interlocked.Exchange(ref outputPipes.VideoPtsWaitDisabled, 1);
                 return TryEstimateVideoPts(outputPipes, ordinal, out var estimatedPtsSeconds)

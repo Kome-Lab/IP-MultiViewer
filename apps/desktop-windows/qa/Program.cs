@@ -16,6 +16,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using IPMultiViewer.Core.Audio;
 using IPMultiViewer.Desktop;
 
 internal static class Program
@@ -296,7 +297,11 @@ internal static class Program
             throw new InvalidOperationException("VU and PEAK both appeared selected before the toggle.");
         }
 
-        var vuRatios = liveFixtureEnabled ? TargetLevelRatios(window) : [];
+        if (liveFixtureEnabled)
+        {
+            AssertMeterTargetsMatchMode(window, MeterDisplayMode.Vu);
+        }
+
         peak.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
         Pump(window, 350);
         var peakSelected = ColorOf(peak.Background);
@@ -318,13 +323,7 @@ internal static class Program
         AssertPeakMarkerVisibility(window, Visibility.Visible);
         if (liveFixtureEnabled)
         {
-            var peakRatios = TargetLevelRatios(window);
-            if (vuRatios.Length == 0 ||
-                peakRatios.Length != vuRatios.Length ||
-                !vuRatios.Zip(peakRatios).Any(pair => Math.Abs(pair.First - pair.Second) > 0.01))
-            {
-                throw new InvalidOperationException("VU and PEAK changed chrome but did not change live channel meter scaling.");
-            }
+            AssertMeterTargetsMatchMode(window, MeterDisplayMode.Peak);
         }
 
         Capture(window, peakOutputPath);
@@ -343,14 +342,35 @@ internal static class Program
         }
     }
 
-    private static double[] TargetLevelRatios(MainWindow window)
+    private static void AssertMeterTargetsMatchMode(MainWindow window, MeterDisplayMode mode)
     {
         var viewsByStream = (IDictionary)PrivateField(window, "_tileAudioMeterViews");
-        return viewsByStream.Values
-            .Cast<IEnumerable>()
-            .SelectMany(views => views.Cast<object>())
-            .Select(view => Convert.ToDouble(view.GetType().GetProperty("TargetLevelRatio")!.GetValue(view)))
+        var hostsByStream = (IDictionary)PrivateField(window, "_tileAudioMeterHosts");
+        var views = viewsByStream.Keys
+            .Cast<object>()
+            .Where(key =>
+                hostsByStream[key] is FrameworkElement host &&
+                host.Visibility == Visibility.Visible)
+            .SelectMany(key => ((IEnumerable)viewsByStream[key]!).Cast<object>())
             .ToArray();
+        if (views.Length == 0)
+        {
+            throw new InvalidOperationException($"No live channel meters were available for {mode} scaling verification.");
+        }
+
+        foreach (var view in views)
+        {
+            var type = view.GetType();
+            var inputProperty = mode == MeterDisplayMode.Peak ? "LastPeakDb" : "LastLevelDb";
+            var inputDb = Convert.ToDouble(type.GetProperty(inputProperty)!.GetValue(view));
+            var actual = Convert.ToDouble(type.GetProperty("TargetLevelRatio")!.GetValue(view));
+            var expected = AudioMeterScale.GetRatio(inputDb, mode);
+            if (!double.IsFinite(actual) || Math.Abs(actual - expected) > 0.000001)
+            {
+                throw new InvalidOperationException(
+                    $"Live channel meter target {actual:0.000000} did not match {mode} scaling {expected:0.000000} for {inputDb:0.0} dBFS.");
+            }
+        }
     }
 
     private static void AssertPeakMarkerVisibility(MainWindow window, Visibility expected)
