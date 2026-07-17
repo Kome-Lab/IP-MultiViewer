@@ -17,7 +17,7 @@ permissions:
 jobs:
   resolve-version:
     name: Resolve software version from Git tag
-    runs-on: windows-latest
+    runs-on: blacksmith-32vcpu-windows-2025
     outputs:
       git_tag: ${{ steps.meta.outputs.git_tag }}
       commit_sha: ${{ steps.meta.outputs.commit_sha }}
@@ -52,7 +52,7 @@ jobs:
   verify-windows:
     name: Verify current Windows app before release
     needs: resolve-version
-    runs-on: windows-latest
+    runs-on: blacksmith-32vcpu-windows-2025
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -67,6 +67,22 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
+      - name: Install and verify FFmpeg SRT support
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install ffmpeg --version=8.1.2 --yes --no-progress
+          if ($LASTEXITCODE -ne 0) {
+            throw "Chocolatey failed to install FFmpeg 8.1.2 (exit code $LASTEXITCODE)."
+          }
+          $ffmpeg = Get-Command ffmpeg -ErrorAction Stop
+          $protocols = & $ffmpeg.Source -hide_banner -protocols 2>$null
+          if (-not ($protocols | Select-String -Pattern '^\s*srt\s*$' -Quiet)) {
+            throw "FFmpeg 8.1.2 does not expose the srt protocol."
+          }
+          "FFMPEG_BIN=$($ffmpeg.Source)" >> $env:GITHUB_ENV
+          & $ffmpeg.Source -hide_banner -version | Select-Object -First 1
+
       - name: Run composite Windows verification
         shell: pwsh
         run: ./scripts/verify-windows.ps1
@@ -76,7 +92,7 @@ jobs:
     needs:
       - resolve-version
       - verify-windows
-    runs-on: windows-latest
+    runs-on: blacksmith-32vcpu-windows-2025
     strategy:
       fail-fast: false
       matrix:
@@ -119,7 +135,7 @@ jobs:
     needs:
       - resolve-version
       - release-windows
-    runs-on: windows-latest
+    runs-on: blacksmith-32vcpu-windows-2025
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:

@@ -13,7 +13,7 @@ permissions:
 jobs:
   verify-windows:
     name: Current desktop, live meters, and publish
-    runs-on: windows-latest
+    runs-on: blacksmith-8vcpu-windows-2025
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
@@ -25,15 +25,21 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      - name: Verify FFmpeg SRT support
+      - name: Install and verify FFmpeg SRT support
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          choco install ffmpeg --version=8.1.2 --yes --no-progress
+          if ($LASTEXITCODE -ne 0) {
+            throw "Chocolatey failed to install FFmpeg 8.1.2 (exit code $LASTEXITCODE)."
+          }
           $ffmpeg = Get-Command ffmpeg -ErrorAction Stop
           $protocols = & $ffmpeg.Source -hide_banner -protocols 2>$null
-          if ($protocols -notcontains "  srt" -and $protocols -notcontains "srt") {
-            throw "The Windows runner FFmpeg build does not expose the srt protocol."
+          if (-not ($protocols | Select-String -Pattern '^\s*srt\s*$' -Quiet)) {
+            throw "FFmpeg 8.1.2 does not expose the srt protocol."
           }
+          "FFMPEG_BIN=$($ffmpeg.Source)" >> $env:GITHUB_ENV
+          & $ffmpeg.Source -hide_banner -version | Select-Object -First 1
 
       - name: Run composite Windows verification
         shell: pwsh
