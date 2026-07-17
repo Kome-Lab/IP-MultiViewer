@@ -61,8 +61,15 @@ Windows Desktop App を主役にした汎用 IP stream MultiViewer です。Auto
 ```powershell
 go test ./...
 go build ./...
+
+# ローカル/対象Windows: 実FFmpegセッションとライブ入力fixtureを含む
 ./scripts/verify-windows.ps1
+
+# GitHub Actions相当: 通信系を除外し、build/UI/publishを検証
+./scripts/verify-windows.ps1 -SkipMediaIntegrationQa -PublishDryRun
 ```
+
+GitHub Actionsでは`-SkipMediaIntegrationQa`を使い、runnerのネットワーク状態やFFmpeg起動タイミングに左右される実メディア検証を必須ゲートにしません。ActionsにはGo/.NET build、desktop-core self-test、offline WPF/UI smoke、publish/package検証を残します。引数なしのローカル実行では実メディア検証も行いますが、現時点のライブfixtureはSRT中心であり、対応する全入力protocolの動作証明とは扱いません。
 
 検証後の `bin` / `obj` / 一時publish / 古い中間成果物を整理する場合:
 

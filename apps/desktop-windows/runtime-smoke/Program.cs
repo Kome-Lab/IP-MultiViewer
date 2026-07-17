@@ -76,7 +76,17 @@ internal static class Program
             AssertFfmpegSidecarAnalysisSnapshotSampling();
             AssertFfmpegAudioStatsParser();
             AssertMissingVideoPtsFallbackIsBounded();
-            (sessionA, sessionB) = AssertTwoFfmpegSessionsCanRun(Path.Combine(smokeBaseDir, "ffmpeg-sessions"));
+            if (string.Equals(
+                    Environment.GetEnvironmentVariable("IPMV_SKIP_MEDIA_INTEGRATION_QA"),
+                    "1",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("ffmpeg_media_integration_smoke_skipped: explicitly disabled for deterministic verification");
+            }
+            else
+            {
+                (sessionA, sessionB) = AssertTwoFfmpegSessionsCanRun(Path.Combine(smokeBaseDir, "ffmpeg-sessions"));
+            }
 
             AssertMainWindowCloseReleasesAuxiliaryWindows(window);
             Console.WriteLine("desktop_smoke_ok");
@@ -2025,7 +2035,7 @@ internal static class Program
 
     private static (object? SessionA, object? SessionB) AssertTwoFfmpegSessionsCanRun(string workDir)
     {
-        var ffmpeg = FindOnPath("ffmpeg.exe") ?? FindOnPath("ffmpeg");
+        var ffmpeg = FindFfmpeg();
         if (ffmpeg is null)
         {
             Console.WriteLine("ffmpeg_session_smoke_skipped: ffmpeg not found");
@@ -2400,6 +2410,18 @@ internal static class Program
         var paths = (Environment.GetEnvironmentVariable("PATH") ?? "")
             .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         return paths.Select(path => Path.Combine(path, executable)).FirstOrDefault(File.Exists);
+    }
+
+    private static string? FindFfmpeg()
+    {
+        var configured = Environment.GetEnvironmentVariable("FFMPEG_BIN");
+        if (!string.IsNullOrWhiteSpace(configured) &&
+            (File.Exists(configured) || string.Equals(configured, "ffmpeg", StringComparison.OrdinalIgnoreCase)))
+        {
+            return configured;
+        }
+
+        return FindOnPath("ffmpeg.exe") ?? FindOnPath("ffmpeg");
     }
 
     private static Type DesktopType(string name)

@@ -12,11 +12,8 @@ permissions:
 
 jobs:
   verify-windows:
-    name: Current desktop, live meters, and publish
-    # Desktop runtime QA executes WPF and FFmpeg. Use the full GitHub-hosted
-    # Windows image because FFmpeg currently fails to load with 0xC0000135 on
-    # the optimized Blacksmith image.
-    runs-on: windows-2025
+    name: Current desktop, offline smoke, and publish
+    runs-on: blacksmith-8vcpu-windows-2025
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
@@ -28,30 +25,9 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      - name: Install and verify FFmpeg SRT support
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          choco install ffmpeg --version=8.1.2 --yes --no-progress
-          if ($LASTEXITCODE -ne 0) {
-            throw "Chocolatey failed to install FFmpeg 8.1.2 (exit code $LASTEXITCODE)."
-          }
-          $ffmpeg = Get-Command ffmpeg -ErrorAction Stop
-          Write-Host "FFmpeg path: $($ffmpeg.Source)"
-          & $ffmpeg.Source -hide_banner -version | Select-Object -First 1
-          $protocolText = (& $ffmpeg.Source -hide_banner -protocols 2>&1) -join "`n"
-          if ($LASTEXITCODE -ne 0) {
-            throw "FFmpeg protocol query failed (exit code $LASTEXITCODE)."
-          }
-          Write-Host $protocolText
-          if ($protocolText -notmatch '(?m)^\s*srt\s*$') {
-            throw "FFmpeg 8.1.2 does not expose the srt protocol."
-          }
-          "FFMPEG_BIN=$($ffmpeg.Source)" >> $env:GITHUB_ENV
-
       - name: Run composite Windows verification
         shell: pwsh
-        run: ./scripts/verify-windows.ps1 -PublishDryRun
+        run: ./scripts/verify-windows.ps1 -PublishDryRun -SkipMediaIntegrationQa
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()

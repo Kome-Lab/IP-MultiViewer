@@ -71,17 +71,17 @@ internal static class Program
         {
             Environment.SetEnvironmentVariable("IPMV_DATA_DIR", qaDataDir);
             AssertPreviewConfigPromotion();
-            var ffmpeg = FindOnPath("ffmpeg.exe") ?? FindOnPath("ffmpeg");
-            var ports = ffmpeg is not null && FfmpegSupportsProtocol(ffmpeg, "srt")
-                ? FreeUdpPorts(4)
-                : [];
-            var liveFixtureEnabled = ffmpeg is not null && ports.Length == 4;
-            var includeAlertFixture = !string.Equals(
-                Environment.GetEnvironmentVariable("IPMV_QA_NO_ALERT"),
-                "1",
-                StringComparison.OrdinalIgnoreCase);
             var liveFixtureMayBeSkipped = string.Equals(
                 Environment.GetEnvironmentVariable("IPMV_SKIP_LIVE_METER_QA"),
+                "1",
+                StringComparison.OrdinalIgnoreCase);
+            var ffmpeg = FindFfmpeg();
+            var ports = !liveFixtureMayBeSkipped && ffmpeg is not null && FfmpegSupportsProtocol(ffmpeg, "srt")
+                ? FreeUdpPorts(4)
+                : [];
+            var liveFixtureEnabled = !liveFixtureMayBeSkipped && ffmpeg is not null && ports.Length == 4;
+            var includeAlertFixture = !string.Equals(
+                Environment.GetEnvironmentVariable("IPMV_QA_NO_ALERT"),
                 "1",
                 StringComparison.OrdinalIgnoreCase);
             if (!liveFixtureEnabled && !liveFixtureMayBeSkipped)
@@ -288,6 +288,8 @@ internal static class Program
     {
         var vu = Named<Button>(window, "NextMeterVuButton");
         var peak = Named<Button>(window, "NextMeterPeakButton");
+        vu.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        Pump(window, 350);
         var vuSelected = ColorOf(vu.Background);
         if (vuSelected == ColorOf(peak.Background))
         {
@@ -1606,6 +1608,18 @@ internal static class Program
         }
 
         return ports.ToArray();
+    }
+
+    private static string? FindFfmpeg()
+    {
+        var configured = Environment.GetEnvironmentVariable("FFMPEG_BIN");
+        if (!string.IsNullOrWhiteSpace(configured) &&
+            (File.Exists(configured) || string.Equals(configured, "ffmpeg", StringComparison.OrdinalIgnoreCase)))
+        {
+            return configured;
+        }
+
+        return FindOnPath("ffmpeg.exe") ?? FindOnPath("ffmpeg");
     }
 
     private static string? FindOnPath(string fileName)

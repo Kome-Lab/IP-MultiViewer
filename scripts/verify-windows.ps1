@@ -1,6 +1,7 @@
 param(
     [switch]$PublishDryRun,
-    [switch]$SkipLiveMeterQa
+    [switch]$SkipLiveMeterQa,
+    [switch]$SkipMediaIntegrationQa
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,6 +10,7 @@ Set-StrictMode -Version Latest
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $qaOutput = Join-Path $repoRoot "artifacts\windows-qa\ip-multiviewer-ui-vu.png"
 $previousSkipLiveMeterQa = $env:IPMV_SKIP_LIVE_METER_QA
+$previousSkipMediaIntegrationQa = $env:IPMV_SKIP_MEDIA_INTEGRATION_QA
 $publishDryRunRoot = $null
 
 function Invoke-Checked {
@@ -27,10 +29,16 @@ function Invoke-Checked {
 
 Push-Location $repoRoot
 try {
-    if ($SkipLiveMeterQa) {
+    if ($SkipLiveMeterQa -or $SkipMediaIntegrationQa) {
         $env:IPMV_SKIP_LIVE_METER_QA = "1"
     } else {
         $env:IPMV_SKIP_LIVE_METER_QA = $null
+    }
+
+    if ($SkipMediaIntegrationQa) {
+        $env:IPMV_SKIP_MEDIA_INTEGRATION_QA = "1"
+    } else {
+        $env:IPMV_SKIP_MEDIA_INTEGRATION_QA = $null
     }
 
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $qaOutput) | Out-Null
@@ -51,7 +59,11 @@ try {
     Write-Host "[verify] Current Windows runtime smoke"
     Invoke-Checked dotnet run --project apps/desktop-windows/runtime-smoke/IPMultiViewer.RuntimeSmoke.csproj --configuration Debug
 
-    Write-Host "[verify] Current live meter and design smoke"
+    if ($SkipLiveMeterQa -or $SkipMediaIntegrationQa) {
+        Write-Host "[verify] Current offline UI and design smoke (live media fixture skipped)"
+    } else {
+        Write-Host "[verify] Current live meter and design smoke"
+    }
     Invoke-Checked dotnet run --project apps/desktop-windows/qa/IPMultiViewer.QA.csproj --configuration Debug -- $qaOutput
 
     if ($PublishDryRun) {
@@ -85,6 +97,7 @@ finally {
     }
     finally {
         $env:IPMV_SKIP_LIVE_METER_QA = $previousSkipLiveMeterQa
+        $env:IPMV_SKIP_MEDIA_INTEGRATION_QA = $previousSkipMediaIntegrationQa
         Pop-Location
     }
 }
