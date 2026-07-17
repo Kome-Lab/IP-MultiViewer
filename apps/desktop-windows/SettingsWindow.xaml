@@ -3,43 +3,47 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="IP MultiViewer Settings"
         Width="1180"
-        Height="820"
+        Height="800"
         MinWidth="1040"
         MinHeight="680"
-        Background="#0f1117"
+        WindowStartupLocation="CenterOwner"
+        Background="#071019"
+        Foreground="#F3F6F8"
         FontFamily="Segoe UI Variable Text, Segoe UI"
+        SnapsToDevicePixels="True"
+        UseLayoutRounding="True"
         Closing="SettingsWindow_Closing">
   <Window.Resources>
-    <SolidColorBrush x:Key="AppBackgroundBrush" Color="#0f1117" />
-    <SolidColorBrush x:Key="SurfaceBrush" Color="#171b24" />
-    <SolidColorBrush x:Key="SurfaceSoftBrush" Color="#202634" />
-    <SolidColorBrush x:Key="SurfaceHoverBrush" Color="#273044" />
-    <SolidColorBrush x:Key="BorderBrush" Color="#30384a" />
-    <SolidColorBrush x:Key="TextPrimaryBrush" Color="#f8fafc" />
-    <SolidColorBrush x:Key="TextSecondaryBrush" Color="#b8c0cc" />
-    <SolidColorBrush x:Key="TextMutedBrush" Color="#7f8a9b" />
-    <SolidColorBrush x:Key="AccentBrush" Color="#38bdf8" />
-    <SolidColorBrush x:Key="AccentSoftBrush" Color="#123247" />
-    <SolidColorBrush x:Key="DangerBrush" Color="#f87171" />
-
-    <LinearGradientBrush x:Key="HeaderBrush" StartPoint="0,0" EndPoint="1,1">
-      <GradientStop Color="#162033" Offset="0" />
-      <GradientStop Color="#0f1117" Offset="1" />
-    </LinearGradientBrush>
+    <SolidColorBrush x:Key="AppBackgroundBrush" Color="#071019" />
+    <SolidColorBrush x:Key="TitleBarBrush" Color="#050B11" />
+    <SolidColorBrush x:Key="CommandBarBrush" Color="#0A141D" />
+    <SolidColorBrush x:Key="SurfaceBrush" Color="#0D1821" />
+    <SolidColorBrush x:Key="SurfaceRaisedBrush" Color="#111D27" />
+    <SolidColorBrush x:Key="SurfaceHoverBrush" Color="#192A36" />
+    <SolidColorBrush x:Key="BorderBrush" Color="#33444F" />
+    <SolidColorBrush x:Key="BorderSoftBrush" Color="#1E2D37" />
+    <SolidColorBrush x:Key="TextPrimaryBrush" Color="#F3F6F8" />
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="#CBD2D8" />
+    <SolidColorBrush x:Key="TextMutedBrush" Color="#8A959E" />
+    <SolidColorBrush x:Key="AccentBrush" Color="#00A8F3" />
+    <SolidColorBrush x:Key="DangerBrush" Color="#CB171B" />
+    <SolidColorBrush x:Key="SuccessBrush" Color="#31BF72" />
 
     <Style x:Key="Card" TargetType="Border">
       <Setter Property="Background" Value="{StaticResource SurfaceBrush}" />
       <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="CornerRadius" Value="3" />
       <Setter Property="Padding" Value="18" />
-      <Setter Property="Margin" Value="0,0,0,14" />
       <Setter Property="SnapsToDevicePixels" Value="True" />
-      <Setter Property="Effect">
-        <Setter.Value>
-          <DropShadowEffect BlurRadius="18" ShadowDepth="0" Opacity="0.18" Color="#000000" />
-        </Setter.Value>
-      </Setter>
+    </Style>
+
+    <Style x:Key="InsetCard" TargetType="Border">
+      <Setter Property="Background" Value="#09141D" />
+      <Setter Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="3" />
+      <Setter Property="Padding" Value="14" />
     </Style>
 
     <Style x:Key="SectionTitle" TargetType="TextBlock">
@@ -58,37 +62,102 @@
 
     <Style x:Key="FieldLabel" TargetType="TextBlock">
       <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
-      <Setter Property="FontSize" Value="12" />
+      <Setter Property="FontSize" Value="11" />
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="Margin" Value="0,0,0,5" />
     </Style>
 
+    <Style x:Key="FieldHelp" TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource TextMutedBrush}" />
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="Margin" Value="0,-7,0,12" />
+    </Style>
+
+    <Style TargetType="Button">
+      <Setter Property="MinHeight" Value="38" />
+      <Setter Property="Padding" Value="14,0" />
+      <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+      <Setter Property="Background" Value="{StaticResource SurfaceRaisedBrush}" />
+      <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Chrome"
+                    Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#111D27, TargetNullValue=#111D27}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="{TemplateBinding BorderThickness}"
+                    CornerRadius="3">
+              <ContentPresenter HorizontalAlignment="Center"
+                                VerticalAlignment="Center"
+                                Margin="{TemplateBinding Padding}"
+                                RecognizesAccessKey="True" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                <Setter TargetName="Chrome" Property="Opacity" Value="0.9" />
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="Chrome" Property="Opacity" Value="0.68" />
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                <Setter TargetName="Chrome" Property="BorderThickness" Value="2" />
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter TargetName="Chrome" Property="Opacity" Value="0.42" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Background" Value="#079CE4" />
+      <Setter Property="BorderBrush" Value="#14B4FF" />
+      <Setter Property="Foreground" Value="White" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
+    <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Background" Value="#3A151A" />
+      <Setter Property="BorderBrush" Value="#8E252A" />
+      <Setter Property="Foreground" Value="#FFD6D8" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
     <Style TargetType="TextBox">
-      <Setter Property="Height" Value="44" />
+      <Setter Property="Height" Value="42" />
       <Setter Property="Margin" Value="0,0,0,12" />
       <Setter Property="Padding" Value="12,4" />
       <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
-      <Setter Property="Background" Value="#101620" />
+      <Setter Property="Background" Value="#09141D" />
       <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
       <Setter Property="CaretBrush" Value="{StaticResource AccentBrush}" />
-      <Setter Property="SelectionBrush" Value="#2563eb" />
+      <Setter Property="SelectionBrush" Value="#12698E" />
       <Setter Property="FontSize" Value="13" />
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="TextBox">
             <Border x:Name="Chrome"
-                    Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#101620, TargetNullValue=#101620}"
+                    Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#09141D, TargetNullValue=#09141D}"
                     BorderBrush="{TemplateBinding BorderBrush}"
                     BorderThickness="1"
-                    CornerRadius="8">
+                    CornerRadius="3">
               <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" />
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsKeyboardFocused" Value="True">
                 <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                <Setter TargetName="Chrome" Property="BorderThickness" Value="2" />
               </Trigger>
               <Trigger Property="IsEnabled" Value="False">
-                <Setter TargetName="Chrome" Property="Opacity" Value="0.55" />
+                <Setter TargetName="Chrome" Property="Opacity" Value="0.48" />
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -97,28 +166,29 @@
     </Style>
 
     <Style TargetType="PasswordBox">
-      <Setter Property="Height" Value="44" />
+      <Setter Property="Height" Value="42" />
       <Setter Property="Margin" Value="0,0,0,12" />
       <Setter Property="Padding" Value="12,4" />
       <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
-      <Setter Property="Background" Value="#101620" />
+      <Setter Property="Background" Value="#09141D" />
       <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
       <Setter Property="CaretBrush" Value="{StaticResource AccentBrush}" />
-      <Setter Property="SelectionBrush" Value="#2563eb" />
+      <Setter Property="SelectionBrush" Value="#12698E" />
       <Setter Property="FontSize" Value="13" />
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="PasswordBox">
             <Border x:Name="Chrome"
-                    Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#101620, TargetNullValue=#101620}"
+                    Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#09141D, TargetNullValue=#09141D}"
                     BorderBrush="{TemplateBinding BorderBrush}"
                     BorderThickness="1"
-                    CornerRadius="8">
+                    CornerRadius="3">
               <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" />
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsKeyboardFocused" Value="True">
                 <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                <Setter TargetName="Chrome" Property="BorderThickness" Value="2" />
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -127,38 +197,38 @@
     </Style>
 
     <Style TargetType="ComboBox">
-      <Setter Property="Height" Value="38" />
+      <Setter Property="Height" Value="42" />
       <Setter Property="Margin" Value="0,0,0,12" />
-      <Setter Property="Padding" Value="10,5" />
+      <Setter Property="Padding" Value="10,4" />
       <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
-      <Setter Property="Background" Value="#101620" />
+      <Setter Property="Background" Value="#09141D" />
       <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ComboBox">
             <Grid>
               <ToggleButton x:Name="ToggleButton"
-                            Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#101620, TargetNullValue=#101620}"
+                            Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#09141D, TargetNullValue=#09141D}"
                             BorderBrush="{TemplateBinding BorderBrush}"
-                            BorderThickness="1"
+                            BorderThickness="{TemplateBinding BorderThickness}"
                             ClickMode="Press"
                             Focusable="False"
-                            Foreground="{TemplateBinding Foreground}"
                             IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
                 <ToggleButton.Template>
                   <ControlTemplate TargetType="ToggleButton">
                     <Border x:Name="Chrome"
-                            Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#101620, TargetNullValue=#101620}"
+                            Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#09141D, TargetNullValue=#09141D}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="8">
+                            CornerRadius="3">
                       <Grid>
                         <Grid.ColumnDefinitions>
                           <ColumnDefinition Width="*" />
-                          <ColumnDefinition Width="30" />
+                          <ColumnDefinition Width="32" />
                         </Grid.ColumnDefinitions>
-                        <ContentPresenter x:Name="ContentSite"
-                                          Content="{Binding SelectedItem.Name, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                        <ContentPresenter Content="{TemplateBinding Content}"
+                                          ContentTemplate="{TemplateBinding ContentTemplate}"
                                           HorizontalAlignment="Left"
                                           IsHitTestVisible="False"
                                           Margin="12,0,4,0"
@@ -179,15 +249,21 @@
                   </ControlTemplate>
                 </ToggleButton.Template>
               </ToggleButton>
+              <ContentPresenter Content="{TemplateBinding SelectionBoxItem}"
+                                ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                IsHitTestVisible="False"
+                                Margin="12,0,36,0"
+                                VerticalAlignment="Center" />
               <Popup AllowsTransparency="True"
                      Focusable="False"
                      IsOpen="{TemplateBinding IsDropDownOpen}"
                      Placement="Bottom"
                      PopupAnimation="Fade">
-                <Border Background="#101620"
+                <Border Background="#09141D"
                         BorderBrush="{StaticResource BorderBrush}"
                         BorderThickness="1"
-                        CornerRadius="8"
+                        CornerRadius="3"
                         MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
                   <ScrollViewer MaxHeight="{TemplateBinding MaxDropDownHeight}">
                     <ItemsPresenter />
@@ -202,13 +278,13 @@
 
     <Style TargetType="ComboBoxItem">
       <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
-      <Setter Property="Background" Value="#101620" />
-      <Setter Property="Padding" Value="10,7" />
+      <Setter Property="Background" Value="#09141D" />
+      <Setter Property="Padding" Value="10,8" />
       <Setter Property="Template">
         <Setter.Value>
           <ControlTemplate TargetType="ComboBoxItem">
             <Border x:Name="Chrome"
-                    Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#101620, TargetNullValue=#101620}"
+                    Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#09141D, TargetNullValue=#09141D}"
                     Padding="{TemplateBinding Padding}">
               <ContentPresenter TextElement.Foreground="{StaticResource TextPrimaryBrush}" />
             </Border>
@@ -217,7 +293,7 @@
                 <Setter TargetName="Chrome" Property="Background" Value="{StaticResource SurfaceHoverBrush}" />
               </Trigger>
               <Trigger Property="IsSelected" Value="True">
-                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                <Setter TargetName="Chrome" Property="Background" Value="#12384B" />
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -227,59 +303,9 @@
 
     <Style TargetType="CheckBox">
       <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
-      <Setter Property="FontWeight" Value="SemiBold" />
-      <Setter Property="Margin" Value="0,0,14,10" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Margin" Value="0,0,18,12" />
       <Setter Property="VerticalContentAlignment" Value="Center" />
-    </Style>
-
-    <Style TargetType="Button">
-      <Setter Property="MinHeight" Value="36" />
-      <Setter Property="Padding" Value="14,0" />
-      <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
-      <Setter Property="Background" Value="{StaticResource SurfaceSoftBrush}" />
-      <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="FontWeight" Value="SemiBold" />
-      <Setter Property="Cursor" Value="Hand" />
-      <Setter Property="Template">
-        <Setter.Value>
-          <ControlTemplate TargetType="Button">
-            <Border x:Name="Chrome"
-                    Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#202634, TargetNullValue=#202634}"
-                    BorderBrush="{TemplateBinding BorderBrush}"
-                    BorderThickness="{TemplateBinding BorderThickness}"
-                    CornerRadius="8">
-              <ContentPresenter HorizontalAlignment="Center"
-                                VerticalAlignment="Center"
-                                Margin="{TemplateBinding Padding}" />
-            </Border>
-            <ControlTemplate.Triggers>
-              <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource SurfaceHoverBrush}" />
-                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
-              </Trigger>
-              <Trigger Property="IsPressed" Value="True">
-                <Setter TargetName="Chrome" Property="Opacity" Value="0.82" />
-              </Trigger>
-              <Trigger Property="IsEnabled" Value="False">
-                <Setter TargetName="Chrome" Property="Opacity" Value="0.45" />
-              </Trigger>
-            </ControlTemplate.Triggers>
-          </ControlTemplate>
-        </Setter.Value>
-      </Setter>
-    </Style>
-
-    <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-      <Setter Property="Background" Value="#0ea5e9" />
-      <Setter Property="BorderBrush" Value="#38bdf8" />
-      <Setter Property="Foreground" Value="White" />
-    </Style>
-
-    <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-      <Setter Property="Background" Value="#3b1d25" />
-      <Setter Property="BorderBrush" Value="#7f1d1d" />
-      <Setter Property="Foreground" Value="#fecaca" />
     </Style>
 
     <Style TargetType="ListBox">
@@ -287,10 +313,13 @@
       <Setter Property="BorderBrush" Value="Transparent" />
       <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
       <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled" />
+      <Setter Property="ScrollViewer.CanContentScroll" Value="True" />
+      <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True" />
+      <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling" />
     </Style>
 
     <Style TargetType="ListBoxItem">
-      <Setter Property="Margin" Value="0,0,0,8" />
+      <Setter Property="Margin" Value="0,0,0,6" />
       <Setter Property="Padding" Value="12,10" />
       <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -298,20 +327,85 @@
         <Setter.Value>
           <ControlTemplate TargetType="ListBoxItem">
             <Border x:Name="Chrome"
-                    Background="#101620"
-                    BorderBrush="{StaticResource BorderBrush}"
+                    Background="#09141D"
+                    BorderBrush="{StaticResource BorderSoftBrush}"
                     BorderThickness="1"
-                    CornerRadius="8"
+                    CornerRadius="3"
                     Padding="{TemplateBinding Padding}">
               <ContentPresenter />
             </Border>
             <ControlTemplate.Triggers>
               <Trigger Property="IsSelected" Value="True">
-                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                <Setter TargetName="Chrome" Property="Background" Value="#12384B" />
                 <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
               </Trigger>
               <Trigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="Chrome" Property="BorderBrush" Value="#64748b" />
+                <Setter TargetName="Chrome" Property="BorderBrush" Value="#526A78" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="TabControl">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TabControl">
+            <Grid KeyboardNavigation.TabNavigation="Local">
+              <Grid.RowDefinitions>
+                <RowDefinition Height="52" />
+                <RowDefinition Height="*" />
+              </Grid.RowDefinitions>
+              <Border Grid.Row="0"
+                      Background="{StaticResource CommandBarBrush}"
+                      BorderBrush="{StaticResource BorderSoftBrush}"
+                      BorderThickness="0,0,0,1">
+                <TabPanel x:Name="HeaderPanel"
+                          IsItemsHost="True"
+                          Margin="18,0"
+                          VerticalAlignment="Stretch" />
+              </Border>
+              <ContentPresenter Grid.Row="1"
+                                ContentSource="SelectedContent"
+                                KeyboardNavigation.DirectionalNavigation="Contained" />
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="TabItem">
+      <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+      <Setter Property="FontSize" Value="13" />
+      <Setter Property="Padding" Value="18,0" />
+      <Setter Property="Margin" Value="0" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TabItem">
+            <Border x:Name="Chrome"
+                    Background="Transparent"
+                    BorderBrush="Transparent"
+                    BorderThickness="0,0,0,3"
+                    Padding="{TemplateBinding Padding}">
+              <ContentPresenter ContentSource="Header"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Center" />
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="Chrome" Property="Background" Value="#0D1B25" />
+                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+                <Setter Property="FontWeight" Value="SemiBold" />
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource SurfaceHoverBrush}" />
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
@@ -320,293 +414,419 @@
     </Style>
   </Window.Resources>
 
-  <Grid>
+  <Grid Background="{StaticResource AppBackgroundBrush}">
     <Grid.RowDefinitions>
-      <RowDefinition Height="86" />
+      <RowDefinition Height="88" />
       <RowDefinition Height="*" />
     </Grid.RowDefinitions>
 
-    <Border Grid.Row="0" Background="{StaticResource HeaderBrush}" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1">
+    <Border Grid.Row="0"
+            Background="{StaticResource TitleBarBrush}"
+            BorderBrush="{StaticResource BorderSoftBrush}"
+            BorderThickness="0,0,0,1">
       <Grid Margin="22,0">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*" />
           <ColumnDefinition Width="Auto" />
+          <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
         <StackPanel VerticalAlignment="Center">
-          <TextBlock Foreground="{StaticResource TextPrimaryBrush}" FontSize="24" FontWeight="SemiBold">Settings</TextBlock>
-          <TextBlock Foreground="{StaticResource TextMutedBrush}" FontSize="13">Streams, analysis thresholds, sync, and monitoring layout</TextBlock>
+          <TextBlock Foreground="{StaticResource TextPrimaryBrush}"
+                     FontSize="24"
+                     FontWeight="SemiBold"
+                     Text="Settings" />
+          <TextBlock Foreground="{StaticResource TextMutedBrush}"
+                     FontSize="12"
+                     Text="Configure sources, alert analysis, synchronization, and monitor behavior" />
         </StackPanel>
-        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-          <Button x:Name="ImportButton" MinWidth="88" Margin="0,0,8,0">Import</Button>
-          <Button x:Name="ExportButton" MinWidth="88" Margin="0,0,8,0">Export</Button>
-          <Button x:Name="ReloadButton" MinWidth="88" Margin="0,0,8,0">Reload</Button>
-          <Button x:Name="SaveButton" Style="{StaticResource PrimaryButton}" MinWidth="96">Save</Button>
+
+        <Border Grid.Column="1"
+                Margin="24,0,18,0"
+                Padding="12,8"
+                MinWidth="220"
+                VerticalAlignment="Center"
+                Background="#09141D"
+                BorderBrush="{StaticResource BorderSoftBrush}"
+                BorderThickness="1"
+                CornerRadius="3">
+          <StackPanel>
+            <TextBlock x:Name="AlertSummaryText"
+                       Foreground="{StaticResource TextSecondaryBrush}"
+                       FontSize="12"
+                       FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="ConfigPathText"
+                       Margin="0,3,0,0"
+                       Foreground="{StaticResource TextMutedBrush}"
+                       FontSize="10"
+                       MaxWidth="260"
+                       TextTrimming="CharacterEllipsis"
+                       ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+          </StackPanel>
+        </Border>
+
+        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button x:Name="ImportButton" MinWidth="82" Margin="0,0,8,0" Content="Import" />
+          <Button x:Name="ExportButton" MinWidth="82" Margin="0,0,8,0" Content="Export" />
+          <Button x:Name="ReloadButton" MinWidth="82" Margin="0,0,8,0" Content="Reload" />
+          <Button x:Name="SaveButton" MinWidth="94" Style="{StaticResource PrimaryButton}" Content="Save" />
         </StackPanel>
       </Grid>
     </Border>
 
-    <Grid Grid.Row="1" Margin="18">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="350" />
-        <ColumnDefinition Width="18" />
-        <ColumnDefinition Width="*" />
-      </Grid.ColumnDefinitions>
+    <TabControl x:Name="SettingsTabs" Grid.Row="1" SelectedIndex="0">
+      <TabItem Header="Streams">
+        <Grid Margin="18">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="310" />
+            <ColumnDefinition Width="14" />
+            <ColumnDefinition Width="*" />
+          </Grid.ColumnDefinitions>
 
-      <Border Grid.Column="0" Style="{StaticResource Card}" Margin="0">
-        <DockPanel>
-          <StackPanel DockPanel.Dock="Top">
-            <TextBlock Style="{StaticResource SectionTitle}">Streams</TextBlock>
-            <TextBlock Style="{StaticResource SectionHint}">Select a source, edit its URL and monitoring behavior, then assign it to a tile on the main view.</TextBlock>
-          </StackPanel>
-
-          <StackPanel DockPanel.Dock="Bottom" Margin="0,14,0,0">
-            <TextBlock Style="{StaticResource FieldLabel}">CONFIGURATION</TextBlock>
-            <Border Background="#101620" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,12">
-              <StackPanel>
-                <TextBlock x:Name="ConfigPathText" Foreground="{StaticResource TextMutedBrush}" TextWrapping="Wrap" />
-                <TextBlock x:Name="AlertSummaryText" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,10,0,0" />
+          <Border Grid.Column="0" Style="{StaticResource Card}">
+            <DockPanel>
+              <StackPanel DockPanel.Dock="Top">
+                <TextBlock Style="{StaticResource SectionTitle}" Text="Sources" />
+                <TextBlock Style="{StaticResource SectionHint}"
+                           Text="Choose a stream to edit. Active playback continues until a change requires a restart." />
               </StackPanel>
+              <Grid DockPanel.Dock="Bottom" Margin="0,12,0,0">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="8" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Button x:Name="AddStreamButton" Grid.Column="0" Content="Add stream" />
+                <Button x:Name="DeleteStreamButton"
+                        Grid.Column="2"
+                        Style="{StaticResource DangerButton}"
+                        Content="Delete" />
+              </Grid>
+              <ListBox x:Name="StreamsList"
+                       DisplayMemberPath="Name"
+                       AutomationProperties.Name="Configured streams" />
+            </DockPanel>
+          </Border>
+
+          <Border Grid.Column="2" Style="{StaticResource Card}">
+            <Grid>
+              <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+              </Grid.RowDefinitions>
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                  <TextBlock Style="{StaticResource SectionTitle}" Text="Selected stream" />
+                  <TextBlock Style="{StaticResource SectionHint}"
+                             Text="Connection, grouping, and per-stream monitoring switches." />
+                </StackPanel>
+                <Button x:Name="ApplyStreamButton"
+                        Grid.Column="1"
+                        MinWidth="132"
+                        VerticalAlignment="Top"
+                        Style="{StaticResource PrimaryButton}"
+                        Content="Apply stream" />
+              </Grid>
+
+              <ScrollViewer Grid.Row="1"
+                            VerticalScrollBarVisibility="Auto"
+                            HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Margin="0,2,8,0">
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="14" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                      <TextBlock x:Name="StreamNameLabel" Style="{StaticResource FieldLabel}" Text="NAME" />
+                      <TextBox x:Name="StreamNameText"
+                               AutomationProperties.LabeledBy="{Binding ElementName=StreamNameLabel}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2">
+                      <TextBlock x:Name="StreamProtocolLabel" Style="{StaticResource FieldLabel}" Text="PROTOCOL" />
+                      <TextBox x:Name="StreamProtocolText"
+                               AutomationProperties.LabeledBy="{Binding ElementName=StreamProtocolLabel}" />
+                      <TextBlock Style="{StaticResource FieldHelp}"
+                                 Text="Use srt-caller or srt-listener, or set ?mode= in the SRT URL." />
+                    </StackPanel>
+                  </Grid>
+
+                  <TextBlock x:Name="StreamUrlLabel" Style="{StaticResource FieldLabel}" Text="INPUT URL" />
+                  <TextBox x:Name="StreamUrlText"
+                           AutomationProperties.LabeledBy="{Binding ElementName=StreamUrlLabel}" />
+                  <TextBlock Style="{StaticResource FieldHelp}"
+                             Text="Credentials remain masked. Changing the input URL restarts that receiver." />
+
+                  <Grid>
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="14" />
+                      <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0">
+                      <TextBlock x:Name="StreamGroupLabel" Style="{StaticResource FieldLabel}" Text="GROUP" />
+                      <TextBox x:Name="StreamGroupText"
+                               AutomationProperties.LabeledBy="{Binding ElementName=StreamGroupLabel}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2">
+                      <TextBlock x:Name="StreamTagsLabel" Style="{StaticResource FieldLabel}" Text="TAGS" />
+                      <TextBox x:Name="StreamTagsText"
+                               AutomationProperties.LabeledBy="{Binding ElementName=StreamTagsLabel}" />
+                      <TextBlock Style="{StaticResource FieldHelp}" Text="Separate tags with commas." />
+                    </StackPanel>
+                  </Grid>
+
+                  <Border Margin="0,2,0,0" Style="{StaticResource InsetCard}">
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="18" />
+                        <ColumnDefinition Width="*" />
+                      </Grid.ColumnDefinitions>
+                      <StackPanel Grid.Column="0">
+                        <TextBlock x:Name="StreamAlertProfileLabel"
+                                   Style="{StaticResource FieldLabel}"
+                                   Text="ALERT PROFILE" />
+                        <ComboBox x:Name="StreamAlertProfileCombo"
+                                  AutomationProperties.LabeledBy="{Binding ElementName=StreamAlertProfileLabel}">
+                          <ComboBox.ItemTemplate>
+                            <DataTemplate>
+                              <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextPrimaryBrush}" />
+                            </DataTemplate>
+                          </ComboBox.ItemTemplate>
+                        </ComboBox>
+                      </StackPanel>
+                      <WrapPanel Grid.Column="2" Margin="0,18,0,0" VerticalAlignment="Center">
+                        <CheckBox x:Name="StreamEnabledCheck" Content="Enabled" />
+                        <CheckBox x:Name="StreamAnalysisCheck" Content="Analysis" />
+                        <CheckBox x:Name="StreamAudioCheck" Content="Audio monitor" />
+                        <CheckBox x:Name="StreamAlertMuteCheck" Content="Mute alert sound" />
+                      </WrapPanel>
+                    </Grid>
+                  </Border>
+                </StackPanel>
+              </ScrollViewer>
+            </Grid>
+          </Border>
+        </Grid>
+      </TabItem>
+
+      <TabItem Header="Alert profiles">
+        <ScrollViewer Margin="18"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Margin="0,0,8,0">
+            <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="280" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                  <TextBlock Style="{StaticResource SectionTitle}" Text="Alert profile thresholds" />
+                  <TextBlock Style="{StaticResource SectionHint}"
+                             Text="Create reusable analysis profiles, then assign one to each stream." />
+                </StackPanel>
+                <StackPanel Grid.Column="1">
+                  <TextBlock x:Name="AlertProfileSelectorLabel" Style="{StaticResource FieldLabel}" Text="PROFILE" />
+                  <ComboBox x:Name="AlertProfileCombo"
+                            AutomationProperties.LabeledBy="{Binding ElementName=AlertProfileSelectorLabel}">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate>
+                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextPrimaryBrush}" />
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                </StackPanel>
+              </Grid>
             </Border>
+
+            <Border Style="{StaticResource Card}" Margin="0,0,0,14">
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="*" />
+                  <ColumnDefinition Width="16" />
+                  <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0">
+                  <TextBlock x:Name="AlertProfileNameLabel" Style="{StaticResource FieldLabel}" Text="PROFILE NAME" />
+                  <TextBox x:Name="AlertProfileNameText"
+                           Margin="0"
+                           AutomationProperties.LabeledBy="{Binding ElementName=AlertProfileNameLabel}" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Bottom">
+                  <Button x:Name="AddAlertProfileButton" MinWidth="82" Margin="0,0,8,0" Content="New" />
+                  <Button x:Name="DuplicateAlertProfileButton" MinWidth="96" Margin="0,0,8,0" Content="Duplicate" />
+                  <Button x:Name="DeleteAlertProfileButton"
+                          MinWidth="82"
+                          Margin="0"
+                          Style="{StaticResource DangerButton}"
+                          Content="Delete" />
+                </StackPanel>
+              </Grid>
+            </Border>
+
             <Grid>
               <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="8" />
+                <ColumnDefinition Width="14" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="14" />
                 <ColumnDefinition Width="*" />
               </Grid.ColumnDefinitions>
-              <Button x:Name="AddStreamButton" Grid.Column="0">Add stream</Button>
-              <Button x:Name="DeleteStreamButton" Grid.Column="2" Style="{StaticResource DangerButton}">Delete</Button>
+
+              <Border Grid.Column="0" Style="{StaticResource Card}">
+                <StackPanel>
+                  <TextBlock Style="{StaticResource SectionTitle}" Text="Black and freeze" />
+                  <TextBlock Style="{StaticResource SectionHint}" Text="Detect sustained dark frames and frozen video." />
+                  <TextBlock Style="{StaticResource FieldLabel}" Text="BLACK LUMA  ·  0–1" />
+                  <TextBox x:Name="BlackThresholdText" />
+                  <TextBlock Style="{StaticResource FieldLabel}" Text="DARK PIXEL LUMA  ·  0–1" />
+                  <TextBox x:Name="BlackPixelThresholdText" />
+                  <TextBlock Style="{StaticResource FieldLabel}" Text="DARK PIXEL RATIO  ·  0–1" />
+                  <TextBox x:Name="BlackPixelRatioText" />
+                </StackPanel>
+              </Border>
+
+              <Border Grid.Column="2" Style="{StaticResource Card}">
+                <StackPanel>
+                  <TextBlock Style="{StaticResource SectionTitle}" Text="Motion and FPS" />
+                  <TextBlock Style="{StaticResource SectionHint}" Text="Control freeze, timeout, and low-frame-rate sensitivity." />
+                  <TextBlock Style="{StaticResource FieldLabel}" Text="FREEZE DIFFERENCE  ·  0–1" />
+                  <TextBox x:Name="FreezeDifferenceText" />
+                  <TextBlock Style="{StaticResource FieldLabel}" Text="FREEZE DURATION  ·  SEC" />
+                  <TextBox x:Name="MinFreezeDurationText" />
+                  <TextBlock Style="{StaticResource FieldLabel}" Text="FREEZE FRAMES" />
+                  <TextBox x:Name="MinFreezeFramesText" />
+                  <TextBlock Style="{StaticResource FieldLabel}" Text="INPUT TIMEOUT  ·  SEC" />
+                  <TextBox x:Name="InputTimeoutText" />
+                  <TextBlock Style="{StaticResource FieldLabel}" Text="LOW FPS THRESHOLD  ·  FPS" />
+                  <TextBox x:Name="LowFpsThresholdText" />
+                  <TextBlock Style="{StaticResource FieldLabel}" Text="LOW FPS DURATION  ·  SEC" />
+                  <TextBox x:Name="MinLowFpsDurationText" />
+                </StackPanel>
+              </Border>
+
+              <Border Grid.Column="4" Style="{StaticResource Card}">
+                <Grid>
+                  <Grid.RowDefinitions>
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                  </Grid.RowDefinitions>
+                  <StackPanel>
+                    <TextBlock Style="{StaticResource SectionTitle}" Text="Audio" />
+                    <TextBlock Style="{StaticResource SectionHint}" Text="Detect silence and repeated clipping events." />
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="SILENCE THRESHOLD  ·  dBFS" />
+                    <TextBox x:Name="SilenceThresholdText" />
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="SILENCE DURATION  ·  SEC" />
+                    <TextBox x:Name="MinSilenceDurationText" />
+                    <TextBlock Style="{StaticResource FieldLabel}" Text="CLIPPING COUNT" />
+                    <TextBox x:Name="ClippingCountText" />
+                  </StackPanel>
+                  <Button x:Name="ApplyAlertProfileButton"
+                          Grid.Row="1"
+                          Margin="0,14,0,0"
+                          MinWidth="132"
+                          HorizontalAlignment="Right"
+                          Style="{StaticResource PrimaryButton}"
+                          Content="Apply profile" />
+                </Grid>
+              </Border>
             </Grid>
           </StackPanel>
+        </ScrollViewer>
+      </TabItem>
 
-          <ListBox x:Name="StreamsList" DisplayMemberPath="Name" />
-        </DockPanel>
-      </Border>
+      <TabItem Header="Sync and audio">
+        <Grid Margin="18">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="14" />
+            <ColumnDefinition Width="*" />
+          </Grid.ColumnDefinitions>
 
-      <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-        <StackPanel>
-          <Border Style="{StaticResource Card}">
+          <Border Grid.Column="0" Style="{StaticResource Card}">
             <StackPanel>
-              <Grid>
+              <TextBlock Style="{StaticResource SectionTitle}" Text="Server synchronization" />
+              <TextBlock Style="{StaticResource SectionHint}"
+                         Text="Keep local mode for a standalone viewer, or connect clients through the shared server." />
+              <TextBlock x:Name="ServerUrlLabel" Style="{StaticResource FieldLabel}" Text="SERVER URL" />
+              <TextBox x:Name="ServerUrlText"
+                       AutomationProperties.LabeledBy="{Binding ElementName=ServerUrlLabel}" />
+              <TextBlock x:Name="ClientTokenLabel" Style="{StaticResource FieldLabel}" Text="CLIENT TOKEN" />
+              <PasswordBox x:Name="ClientTokenBox"
+                           AutomationProperties.LabeledBy="{Binding ElementName=ClientTokenLabel}" />
+              <Grid Margin="0,2,0,16">
                 <Grid.ColumnDefinitions>
                   <ColumnDefinition Width="*" />
                   <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
-                <StackPanel>
-                  <TextBlock Style="{StaticResource SectionTitle}">Selected stream</TextBlock>
-                  <TextBlock Style="{StaticResource SectionHint}">Connection, grouping, and per-stream monitoring switches.</TextBlock>
-                </StackPanel>
-                <Button x:Name="ApplyStreamButton" Grid.Column="1" Style="{StaticResource PrimaryButton}" MinWidth="132" VerticalAlignment="Top">Apply stream</Button>
+                <CheckBox x:Name="ServerSyncCheck"
+                          Margin="0"
+                          VerticalAlignment="Center"
+                          Content="Enable server sync" />
+                <Button x:Name="ApplyServerButton"
+                        Grid.Column="1"
+                        MinWidth="108"
+                        Style="{StaticResource PrimaryButton}"
+                        Content="Apply sync" />
               </Grid>
-
-              <Grid>
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*" />
-                  <ColumnDefinition Width="14" />
-                  <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <Grid.RowDefinitions>
-                  <RowDefinition Height="Auto" />
-                  <RowDefinition Height="Auto" />
-                  <RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
-
-                <StackPanel Grid.Row="0" Grid.Column="0">
-                  <TextBlock Style="{StaticResource FieldLabel}">NAME</TextBlock>
-                  <TextBox x:Name="StreamNameText" />
-                </StackPanel>
-                <StackPanel Grid.Row="0" Grid.Column="2">
-                  <TextBlock Style="{StaticResource FieldLabel}">PROTOCOL</TextBlock>
-                  <TextBox x:Name="StreamProtocolText" />
+              <Border Style="{StaticResource InsetCard}">
+                <StackPanel>
                   <TextBlock Foreground="{StaticResource TextMutedBrush}"
-                             FontSize="11"
-                             Margin="0,-8,0,12"
-                             Text="Use srt-caller or srt-listener, or set ?mode= in the SRT URL." />
+                             FontSize="10"
+                             FontWeight="SemiBold"
+                             Text="CONNECTION STATUS" />
+                  <TextBlock x:Name="ServerSyncStatusText"
+                             Margin="0,6,0,0"
+                             Foreground="{StaticResource TextSecondaryBrush}"
+                             TextWrapping="Wrap" />
+                  <TextBlock x:Name="ServerClientSummaryText"
+                             Margin="0,8,0,0"
+                             Foreground="{StaticResource TextMutedBrush}"
+                             TextWrapping="Wrap" />
                 </StackPanel>
-
-                <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3">
-                  <TextBlock Style="{StaticResource FieldLabel}">INPUT URL</TextBlock>
-                  <TextBox x:Name="StreamUrlText" />
-                </StackPanel>
-
-                <StackPanel Grid.Row="2" Grid.Column="0">
-                  <TextBlock Style="{StaticResource FieldLabel}">GROUP</TextBlock>
-                  <TextBox x:Name="StreamGroupText" />
-                </StackPanel>
-                <StackPanel Grid.Row="2" Grid.Column="2">
-                  <TextBlock Style="{StaticResource FieldLabel}">TAGS</TextBlock>
-                  <TextBox x:Name="StreamTagsText" />
-                </StackPanel>
-              </Grid>
-
-              <Grid Margin="0,2,0,0">
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*" />
-                  <ColumnDefinition Width="14" />
-                  <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0">
-                  <TextBlock Style="{StaticResource FieldLabel}">ALERT PROFILE</TextBlock>
-                  <ComboBox x:Name="StreamAlertProfileCombo">
-                    <ComboBox.ItemTemplate>
-                      <DataTemplate>
-                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextPrimaryBrush}" />
-                      </DataTemplate>
-                    </ComboBox.ItemTemplate>
-                  </ComboBox>
-                </StackPanel>
-                <WrapPanel Grid.Column="2" VerticalAlignment="Center" Margin="0,18,0,0">
-                  <CheckBox x:Name="StreamEnabledCheck">Enabled</CheckBox>
-                  <CheckBox x:Name="StreamAnalysisCheck">Analysis</CheckBox>
-                  <CheckBox x:Name="StreamAudioCheck">Audio monitor</CheckBox>
-                  <CheckBox x:Name="StreamAlertMuteCheck">Mute alert sound</CheckBox>
-                </WrapPanel>
-              </Grid>
+              </Border>
             </StackPanel>
           </Border>
 
-          <Border Style="{StaticResource Card}">
+          <Border Grid.Column="2" Style="{StaticResource Card}">
             <StackPanel>
-              <Grid>
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*" />
-                  <ColumnDefinition Width="260" />
-                </Grid.ColumnDefinitions>
+              <TextBlock Style="{StaticResource SectionTitle}" Text="Monitor defaults" />
+              <TextBlock Style="{StaticResource SectionHint}"
+                         Text="Choose the active layout and global audio behavior for this workstation." />
+              <TextBlock x:Name="LayoutLabel" Style="{StaticResource FieldLabel}" Text="LAYOUT" />
+              <ComboBox x:Name="LayoutCombo"
+                        AutomationProperties.LabeledBy="{Binding ElementName=LayoutLabel}">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate>
+                    <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextPrimaryBrush}" />
+                  </DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+              <Border Margin="0,4,0,0" Style="{StaticResource InsetCard}">
                 <StackPanel>
-                  <TextBlock Style="{StaticResource SectionTitle}">Alert profile thresholds</TextBlock>
-                  <TextBlock Style="{StaticResource SectionHint}">Create reusable alert profiles, then assign one per stream without changing stream credentials.</TextBlock>
+                  <TextBlock Foreground="{StaticResource TextPrimaryBrush}"
+                             FontWeight="SemiBold"
+                             Text="Audio behavior" />
+                  <TextBlock Margin="0,4,0,14"
+                             Foreground="{StaticResource TextMutedBrush}"
+                             FontSize="12"
+                             TextWrapping="Wrap"
+                             Text="Global mute affects monitored stream audio. Alert sound controls audible alarm playback." />
+                  <CheckBox x:Name="GlobalMuteCheck" Content="Global mute" />
+                  <CheckBox x:Name="AlertSoundCheck" Content="Alert sound" />
                 </StackPanel>
-                <StackPanel Grid.Column="1">
-                  <TextBlock Style="{StaticResource FieldLabel}">PROFILE</TextBlock>
-                  <ComboBox x:Name="AlertProfileCombo">
-                    <ComboBox.ItemTemplate>
-                      <DataTemplate>
-                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextPrimaryBrush}" />
-                      </DataTemplate>
-                    </ComboBox.ItemTemplate>
-                  </ComboBox>
-                </StackPanel>
-              </Grid>
-
-              <Grid Margin="0,0,0,14">
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*" />
-                  <ColumnDefinition Width="12" />
-                  <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <StackPanel Grid.Column="0">
-                  <TextBlock Style="{StaticResource FieldLabel}">PROFILE NAME</TextBlock>
-                  <TextBox x:Name="AlertProfileNameText" />
-                </StackPanel>
-                <WrapPanel Grid.Column="2" VerticalAlignment="Bottom">
-                  <Button x:Name="AddAlertProfileButton" MinWidth="84">New</Button>
-                  <Button x:Name="DuplicateAlertProfileButton" MinWidth="96">Duplicate</Button>
-                  <Button x:Name="DeleteAlertProfileButton" Style="{StaticResource DangerButton}" MinWidth="84" Margin="0">Delete</Button>
-                </WrapPanel>
-              </Grid>
-
-              <Grid>
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*" />
-                  <ColumnDefinition Width="14" />
-                  <ColumnDefinition Width="*" />
-                  <ColumnDefinition Width="14" />
-                  <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-
-                <Border Grid.Column="0" Background="#101620" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="12">
-                  <StackPanel>
-                    <TextBlock Foreground="{StaticResource TextPrimaryBrush}" FontWeight="SemiBold" Margin="0,0,0,10">Black / freeze</TextBlock>
-                    <TextBlock Style="{StaticResource FieldLabel}">BLACK LUMA</TextBlock>
-                    <TextBox x:Name="BlackThresholdText" />
-                    <TextBlock Style="{StaticResource FieldLabel}">DARK PIXEL LUMA</TextBlock>
-                    <TextBox x:Name="BlackPixelThresholdText" />
-                    <TextBlock Style="{StaticResource FieldLabel}">DARK PIXEL RATIO</TextBlock>
-                    <TextBox x:Name="BlackPixelRatioText" />
-                  </StackPanel>
-                </Border>
-
-                <Border Grid.Column="2" Background="#101620" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="12">
-                  <StackPanel>
-                    <TextBlock Foreground="{StaticResource TextPrimaryBrush}" FontWeight="SemiBold" Margin="0,0,0,10">Motion / FPS</TextBlock>
-                    <TextBlock Style="{StaticResource FieldLabel}">FREEZE DIFF</TextBlock>
-                    <TextBox x:Name="FreezeDifferenceText" />
-                    <TextBlock Style="{StaticResource FieldLabel}">FREEZE DURATION SEC</TextBlock>
-                    <TextBox x:Name="MinFreezeDurationText" />
-                    <TextBlock Style="{StaticResource FieldLabel}">FREEZE FRAMES</TextBlock>
-                    <TextBox x:Name="MinFreezeFramesText" />
-                    <TextBlock Style="{StaticResource FieldLabel}">INPUT TIMEOUT SEC</TextBlock>
-                    <TextBox x:Name="InputTimeoutText" />
-                    <TextBlock Style="{StaticResource FieldLabel}">LOW FPS THRESHOLD</TextBlock>
-                    <TextBox x:Name="LowFpsThresholdText" />
-                    <TextBlock Style="{StaticResource FieldLabel}">LOW FPS DURATION SEC</TextBlock>
-                    <TextBox x:Name="MinLowFpsDurationText" />
-                  </StackPanel>
-                </Border>
-
-                <Border Grid.Column="4" Background="#101620" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="12">
-                  <StackPanel>
-                    <TextBlock Foreground="{StaticResource TextPrimaryBrush}" FontWeight="SemiBold" Margin="0,0,0,10">Audio</TextBlock>
-                    <TextBlock Style="{StaticResource FieldLabel}">SILENCE DBFS</TextBlock>
-                    <TextBox x:Name="SilenceThresholdText" />
-                    <TextBlock Style="{StaticResource FieldLabel}">SILENCE DURATION SEC</TextBlock>
-                    <TextBox x:Name="MinSilenceDurationText" />
-                    <TextBlock Style="{StaticResource FieldLabel}">CLIPPING COUNT</TextBlock>
-                    <TextBox x:Name="ClippingCountText" />
-                    <Button x:Name="ApplyAlertProfileButton" Style="{StaticResource PrimaryButton}" Margin="0,8,0,0">Apply profile</Button>
-                  </StackPanel>
-                </Border>
-              </Grid>
+              </Border>
             </StackPanel>
           </Border>
-
-          <Border Style="{StaticResource Card}" Margin="0,0,0,0">
-            <StackPanel>
-              <TextBlock Style="{StaticResource SectionTitle}">Sync, layout, and audio</TextBlock>
-              <TextBlock Style="{StaticResource SectionHint}">Use local mode first, then enable server sync when multiple clients share streams and alerts.</TextBlock>
-
-              <Grid>
-                <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="*" />
-                  <ColumnDefinition Width="14" />
-                  <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-
-                <StackPanel Grid.Column="0">
-                  <TextBlock Style="{StaticResource FieldLabel}">SERVER URL</TextBlock>
-                  <TextBox x:Name="ServerUrlText" />
-                  <TextBlock Style="{StaticResource FieldLabel}">CLIENT TOKEN</TextBlock>
-                  <PasswordBox x:Name="ClientTokenBox" />
-                  <WrapPanel>
-                    <CheckBox x:Name="ServerSyncCheck">Server sync</CheckBox>
-                    <Button x:Name="ApplyServerButton" MinWidth="96">Apply sync</Button>
-                  </WrapPanel>
-                </StackPanel>
-
-                <StackPanel Grid.Column="2">
-                  <TextBlock Style="{StaticResource FieldLabel}">LAYOUT</TextBlock>
-                  <ComboBox x:Name="LayoutCombo">
-                    <ComboBox.ItemTemplate>
-                      <DataTemplate>
-                        <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextPrimaryBrush}" />
-                      </DataTemplate>
-                    </ComboBox.ItemTemplate>
-                  </ComboBox>
-                  <WrapPanel Margin="0,2,0,10">
-                    <CheckBox x:Name="GlobalMuteCheck">Global mute</CheckBox>
-                    <CheckBox x:Name="AlertSoundCheck">Alert sound</CheckBox>
-                  </WrapPanel>
-                  <Border Background="#101620" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="12">
-                    <StackPanel>
-                      <TextBlock x:Name="ServerSyncStatusText" Foreground="{StaticResource TextSecondaryBrush}" TextWrapping="Wrap" />
-                      <TextBlock x:Name="ServerClientSummaryText" Foreground="{StaticResource TextMutedBrush}" TextWrapping="Wrap" Margin="0,8,0,0" />
-                    </StackPanel>
-                  </Border>
-                </StackPanel>
-              </Grid>
-            </StackPanel>
-          </Border>
-        </StackPanel>
-      </ScrollViewer>
-    </Grid>
+        </Grid>
+      </TabItem>
+    </TabControl>
   </Grid>
 </Window>

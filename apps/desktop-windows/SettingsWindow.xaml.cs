@@ -1,10 +1,16 @@
+using System;
 using System.ComponentModel;
+using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Interop;
 
 namespace IPMultiViewer.Desktop;
 
 public partial class SettingsWindow : Window
 {
+    private const int DwmwaUseImmersiveDarkModeBefore20H1 = 19;
+    private const int DwmwaUseImmersiveDarkMode = 20;
+
     private readonly MainWindow _owner;
     private bool _allowClose;
 
@@ -12,6 +18,12 @@ public partial class SettingsWindow : Window
     {
         _owner = owner;
         InitializeComponent();
+        ShowInTaskbar = false;
+        SourceInitialized += (_, _) =>
+        {
+            AttachOwner();
+            TryEnableDarkTitleBar();
+        };
         ImportButton.Click += _owner.ImportButton_Click;
         ExportButton.Click += _owner.ExportButton_Click;
         SaveButton.Click += _owner.SaveButton_Click;
@@ -31,6 +43,47 @@ public partial class SettingsWindow : Window
         DuplicateAlertProfileButton.Click += _owner.DuplicateAlertProfileButton_Click;
         DeleteAlertProfileButton.Click += _owner.DeleteAlertProfileButton_Click;
         ApplyAlertProfileButton.Click += _owner.ApplyAlertProfileButton_Click;
+    }
+
+    private void AttachOwner()
+    {
+        if (Owner is null && _owner.IsVisible)
+        {
+            Owner = _owner;
+        }
+    }
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(
+        IntPtr windowHandle,
+        int attribute,
+        ref int value,
+        int valueSize);
+
+    private void TryEnableDarkTitleBar()
+    {
+        try
+        {
+            var enabled = 1;
+            var handle = new WindowInteropHelper(this).Handle;
+            if (handle == IntPtr.Zero)
+            {
+                return;
+            }
+
+            if (DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkMode, ref enabled, sizeof(int)) != 0)
+            {
+                _ = DwmSetWindowAttribute(handle, DwmwaUseImmersiveDarkModeBefore20H1, ref enabled, sizeof(int));
+            }
+        }
+        catch (DllNotFoundException)
+        {
+            // Older Windows builds may not expose DWM theming. The content remains dark.
+        }
+        catch (EntryPointNotFoundException)
+        {
+            // The window is still usable when the dark-title-bar attribute is unavailable.
+        }
     }
 
     private void SettingsWindow_Closing(object? sender, CancelEventArgs e)

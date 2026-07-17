@@ -6,8 +6,8 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version, for example v1.2.3"
+      tag:
+        description: "Existing Git tag to release, for example v1.2.3"
         required: true
         type: string
 
@@ -15,25 +15,81 @@ permissions:
   contents: write
 
 jobs:
+  resolve-version:
+    name: Resolve software version from Git tag
+    runs-on: windows-latest
+    outputs:
+      git_tag: ${{ steps.meta.outputs.git_tag }}
+      commit_sha: ${{ steps.meta.outputs.commit_sha }}
+      software_version: ${{ steps.meta.outputs.software_version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      make_latest: ${{ steps.meta.outputs.make_latest }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Resolve and verify tag
+        id: meta
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch") {
+            $gitTag = "${{ inputs.tag }}"
+          } else {
+            $gitTag = $env:GITHUB_REF_NAME
+          }
+          $metadata = ./scripts/resolve-release-version.ps1 -GitTag $gitTag -VerifyAtHead
+          $isPrerelease = [bool]$metadata.IsPrerelease
+          $commitSha = (& git rev-parse HEAD).Trim()
+          "git_tag=$($metadata.GitTag)" >> $env:GITHUB_OUTPUT
+          "commit_sha=$commitSha" >> $env:GITHUB_OUTPUT
+          "software_version=$($metadata.SoftwareVersion)" >> $env:GITHUB_OUTPUT
+          "prerelease=$($isPrerelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          "make_latest=$(((-not $isPrerelease).ToString().ToLowerInvariant()))" >> $env:GITHUB_OUTPUT
+
+  verify-windows:
+    name: Verify current Windows app before release
+    needs: resolve-version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ needs.resolve-version.outputs.commit_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Run composite Windows verification
+        shell: pwsh
+        run: ./scripts/verify-windows.ps1
+
   release-windows:
-    name: Build Windows x64 executable (${{ matrix.flavor }})
+    name: Build Windows x64 release package (${{ matrix.flavor }})
+    needs:
+      - resolve-version
+      - verify-windows
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - flavor: standard
-            package_suffix: ""
-            exe_suffix: ""
-            enable_gpu_rendering: "false"
           - flavor: gpu
-            package_suffix: "_gpu"
-            exe_suffix: "-GPU"
-            enable_gpu_rendering: "true"
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ needs.resolve-version.outputs.commit_sha }}
+          fetch-depth: 0
 
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           dotnet-version: "10.0.x"
 
@@ -42,75 +98,85 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          if ($env:GITHUB_REF_TYPE -eq "tag") {
-            $version = $env:GITHUB_REF_NAME
-          } else {
-            $version = "${{ inputs.version }}"
-          }
-          if ($version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$') {
-            throw "Version must look like v1.2.3; got $version"
-          }
-          $packageName = "ip-multiviewer_${version}_windows_x64${{ matrix.package_suffix }}"
-          $exeName = "IPMultiViewer-${version}-Desktop${{ matrix.exe_suffix }}.exe"
-          "version=$version" >> $env:GITHUB_OUTPUT
+          $gitTag = "${{ needs.resolve-version.outputs.git_tag }}"
+          $packageSuffix = if ("${{ matrix.flavor }}" -eq "gpu") { "-gpu" } else { "" }
+          $packageName = "IPMultiViewer-$gitTag-windows-x64$packageSuffix"
           "package_name=$packageName" >> $env:GITHUB_OUTPUT
-          "exe_name=$exeName" >> $env:GITHUB_OUTPUT
-          "assembly_version=$($version.TrimStart('v'))" >> $env:GITHUB_OUTPUT
 
-      - name: Restore desktop project
+      - name: Build and validate release package
         shell: pwsh
-        run: dotnet restore apps/desktop-windows/IPMultiViewer.Desktop.csproj
+        run: ./scripts/package-windows.ps1 -GitTag "${{ needs.resolve-version.outputs.git_tag }}" -Flavor "${{ matrix.flavor }}" -OutputDir artifacts
 
-      - name: Publish single-file executable
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          dotnet publish apps/desktop-windows/IPMultiViewer.Desktop.csproj `
-            -c Release `
-            -r win-x64 `
-            --self-contained true `
-            -o publish/windows-x64-${{ matrix.flavor }} `
-            -p:PublishSingleFile=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true `
-            -p:IncludeAllContentForSelfExtract=true `
-            -p:EnableCompressionInSingleFile=true `
-            -p:DebugType=none `
-            -p:DebugSymbols=false `
-            -p:EnableGpuRendering=${{ matrix.enable_gpu_rendering }} `
-            -p:Version=${{ steps.meta.outputs.assembly_version }}
-
-          $exe = "publish/windows-x64-${{ matrix.flavor }}/IPMultiViewer.Desktop.exe"
-          if (-not (Test-Path -LiteralPath $exe)) {
-            throw "Publish did not produce expected executable: $exe"
-          }
-
-      - name: Package release artifacts
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $packageName = "${{ steps.meta.outputs.package_name }}"
-          $staging = Join-Path "staging" $packageName
-          $artifacts = "artifacts"
-          New-Item -ItemType Directory -Force -Path $staging, $artifacts | Out-Null
-          Copy-Item -LiteralPath "publish/windows-x64-${{ matrix.flavor }}/IPMultiViewer.Desktop.exe" -Destination (Join-Path $staging "${{ steps.meta.outputs.exe_name }}") -Force
-
-          $zip = Join-Path $artifacts "$packageName.zip"
-          if (Test-Path -LiteralPath $zip) {
-            Remove-Item -LiteralPath $zip -Force
-          }
-          Compress-Archive -Path (Join-Path $staging "*") -DestinationPath $zip
-
-          $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $zip
-          "$($hash.Hash.ToLowerInvariant())  $packageName.zip" | Set-Content -NoNewline -Encoding ascii -Path "$zip.sha256"
-
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ steps.meta.outputs.package_name }}
-          path: artifacts/*
+          path: |
+            artifacts/${{ steps.meta.outputs.package_name }}.zip
+            artifacts/${{ steps.meta.outputs.package_name }}.zip.sha256
+
+  publish-release:
+    name: Publish complete Windows release
+    needs:
+      - resolve-version
+      - release-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          ref: ${{ needs.resolve-version.outputs.commit_sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: IPMultiViewer-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Validate complete release set
+        id: release-meta
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $gitTag = "${{ needs.resolve-version.outputs.git_tag }}"
+          $null = ./scripts/resolve-release-version.ps1 -GitTag $gitTag -VerifyAtHead
+
+          $zipNames = @(
+            "IPMultiViewer-$gitTag-windows-x64.zip",
+            "IPMultiViewer-$gitTag-windows-x64-gpu.zip"
+          )
+          $expectedNames = @(
+            $zipNames[0],
+            "$($zipNames[0]).sha256",
+            $zipNames[1],
+            "$($zipNames[1]).sha256"
+          ) | Sort-Object
+          $actualNames = @(
+            Get-ChildItem -LiteralPath artifacts -File |
+              Select-Object -ExpandProperty Name |
+              Sort-Object
+          )
+          if (($actualNames -join "`n") -ne ($expectedNames -join "`n")) {
+            throw "Incomplete or unexpected Windows release set: $($actualNames -join ', ')"
+          }
+
+          foreach ($zipName in $zipNames) {
+            $zipPath = Join-Path artifacts $zipName
+            $hashPath = "$zipPath.sha256"
+            $checksumLine = (Get-Content -LiteralPath $hashPath -Raw).Trim()
+            if ($checksumLine -notmatch '^(?<hash>[0-9a-fA-F]{64})  (?<file>.+\.zip)$' -or $Matches.file -ne $zipName) {
+              throw "Invalid checksum file: $hashPath"
+            }
+            $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash
+            if (-not $actualHash.Equals($Matches.hash, [System.StringComparison]::OrdinalIgnoreCase)) {
+              throw "Checksum mismatch: $zipName"
+            }
+          }
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@c12583777ecdfd3be55c69cf75464299dc01057e # v3
         with:
-          tag_name: ${{ steps.meta.outputs.version }}
-          target_commitish: ${{ github.sha }}
+          tag_name: ${{ needs.resolve-version.outputs.git_tag }}
+          target_commitish: ${{ needs.resolve-version.outputs.commit_sha }}
+          prerelease: ${{ needs.resolve-version.outputs.prerelease }}
+          make_latest: ${{ needs.resolve-version.outputs.make_latest }}
           files: artifacts/*

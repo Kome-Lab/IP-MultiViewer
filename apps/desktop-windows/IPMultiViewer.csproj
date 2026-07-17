@@ -5,8 +5,12 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
+    <AssemblyName>IPMultiViewer</AssemblyName>
+    <AssemblyTitle>IP MultiViewer</AssemblyTitle>
+    <RootNamespace>IPMultiViewer.Desktop</RootNamespace>
     <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
     <Product>IP MultiViewer</Product>
+    <Description>IP stream multiviewer and alert monitor for Windows</Description>
     <Authors>Jumala9163, Kome-Lab</Authors>
     <Company>Kome-Lab</Company>
     <Copyright>Copyright (c) Jumala9163, Kome-Lab</Copyright>
@@ -14,8 +18,14 @@
     <CodeSigningSubject>Jumala9163, Kome-Lab</CodeSigningSubject>
     <SignTimestampUrl>http://timestamp.digicert.com</SignTimestampUrl>
     <EnableGpuRendering>false</EnableGpuRendering>
+    <PlatformTarget>x64</PlatformTarget>
+    <VlcWindowsX64Enabled>true</VlcWindowsX64Enabled>
+    <VlcWindowsX86Enabled>false</VlcWindowsX86Enabled>
+    <VlcWindowsArm64Enabled>false</VlcWindowsArm64Enabled>
     <DefineConstants Condition="'$(EnableGpuRendering)' == 'true'">$(DefineConstants);IPMV_GPU_RENDERING</DefineConstants>
+    <DefaultItemExcludes>$(DefaultItemExcludes);qa\**;runtime-smoke\**</DefaultItemExcludes>
   </PropertyGroup>
+
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <SelfContained>true</SelfContained>
@@ -26,11 +36,14 @@
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>
   </PropertyGroup>
+
   <ItemGroup>
+    <ProjectReference Include="..\..\packages\desktop-core\IPMultiViewer.Core.csproj" />
     <Resource Include="Assets\AppIcon.ico" />
     <PackageReference Include="LibVLCSharp.WPF" Version="3.10.0" />
     <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.23.1" />
   </ItemGroup>
+
   <Target Name="SignPublishedExecutable" AfterTargets="Publish" Condition="'$(SignOutput)' == 'true'">
     <Error Condition="'$(SignToolPath)' == ''" Text="Set SignToolPath to signtool.exe before publishing with SignOutput=true." />
     <Exec Condition="'$(CodeSigningThumbprint)' != ''" Command="&quot;$(SignToolPath)&quot; sign /fd SHA256 /tr &quot;$(SignTimestampUrl)&quot; /td SHA256 /sha1 &quot;$(CodeSigningThumbprint)&quot; &quot;$(PublishDir)$(AssemblyName).exe&quot;" />

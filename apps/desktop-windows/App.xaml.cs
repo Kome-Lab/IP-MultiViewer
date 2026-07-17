@@ -13,7 +13,10 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
-        _singleInstanceMutex = new Mutex(initiallyOwned: true, "Local\\IPMultiViewer.Desktop.SingleInstance", out _ownsSingleInstanceMutex);
+        _singleInstanceMutex = new Mutex(
+            initiallyOwned: true,
+            "Local\\IPMultiViewer.DesktopFamily.SingleInstance",
+            out _ownsSingleInstanceMutex);
         if (!_ownsSingleInstanceMutex)
         {
             Shutdown(0);
@@ -24,9 +27,9 @@ public partial class App : Application
         DispatcherUnhandledException += (_, args) => LogUnhandledException("dispatcher", args.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
         {
-            if (args.ExceptionObject is Exception ex)
+            if (args.ExceptionObject is Exception exception)
             {
-                LogUnhandledException("app-domain", ex);
+                LogUnhandledException("app-domain", exception);
             }
         };
         TaskScheduler.UnobservedTaskException += (_, args) => LogUnhandledException("task", args.Exception);
@@ -50,11 +53,13 @@ public partial class App : Application
         {
             Directory.CreateDirectory(LocalConfigStore.LogDirectory);
             var path = Path.Combine(LocalConfigStore.LogDirectory, "desktop.log");
-            File.AppendAllText(path, $"{DateTimeOffset.Now:O} Unhandled exception ({source}): {exception}{Environment.NewLine}");
+            File.AppendAllText(
+                path,
+                $"{DateTimeOffset.Now:O} Unhandled exception ({source}): {exception}{Environment.NewLine}");
         }
         catch
         {
-            // Last-resort logging must not create another startup/render failure.
+            // Last-resort logging must not create another startup or render failure.
         }
     }
 }

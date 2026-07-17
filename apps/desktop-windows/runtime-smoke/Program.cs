@@ -34,7 +34,7 @@ internal static class Program
         var previousLongDataDir = Environment.GetEnvironmentVariable("IPMULTIVIEWER_DATA_DIR");
         var previousLongConfigDir = Environment.GetEnvironmentVariable("IPMULTIVIEWER_CONFIG_DIR");
         var previousLongLogDir = Environment.GetEnvironmentVariable("IPMULTIVIEWER_LOG_DIR");
-        var smokeBaseDir = Path.Combine(Path.GetTempPath(), $"ipmv-desktop-smoke-{Guid.NewGuid():N}");
+        var smokeBaseDir = Path.Combine(Path.GetTempPath(), $"ipmv-runtime-smoke-{Guid.NewGuid():N}");
         try
         {
             AssertConfigStorePathOverrides();
@@ -44,6 +44,7 @@ internal static class Program
             Environment.SetEnvironmentVariable("IPMULTIVIEWER_DATA_DIR", null);
             Environment.SetEnvironmentVariable("IPMULTIVIEWER_CONFIG_DIR", null);
             Environment.SetEnvironmentVariable("IPMULTIVIEWER_LOG_DIR", null);
+            AssertQueuedConfigPersistence(smokeBaseDir);
             using var appScope = new WpfAppScope();
             var window = new MainWindow
             {
@@ -68,17 +69,14 @@ internal static class Program
             AssertGpuRenderingUsesLibVlcPlayback(window);
             AssertPlaybackStatusWaitsForPresentedVideo(window);
             AssertPlaybackSurfaceClearsStaleVideo(window);
-            AssertTileVideoSurfaceHasDedicatedFrameRows(window);
-            AssertAudioMeterSidePanels(window);
             AssertAudioLevelMonitorThrottlesCallbacks();
             AssertSharedSidecarAnalysisMonitors(window);
             AssertFfmpegSnapshotSampling();
             AssertImmediateBlackFrameRaisesAlert(window);
             AssertFfmpegSidecarAnalysisSnapshotSampling();
             AssertFfmpegAudioStatsParser();
-            AssertTileFreshnessTextDoesNotRepaintChrome(window);
-            AssertTileAssignOnlyRendersAffectedTiles(window);
-            (sessionA, sessionB) = AssertTwoFfmpegSessionsCanRun();
+            AssertMissingVideoPtsFallbackIsBounded();
+            (sessionA, sessionB) = AssertTwoFfmpegSessionsCanRun(Path.Combine(smokeBaseDir, "ffmpeg-sessions"));
 
             AssertMainWindowCloseReleasesAuxiliaryWindows(window);
             Console.WriteLine("desktop_smoke_ok");
@@ -145,6 +143,137 @@ internal static class Program
             Environment.SetEnvironmentVariable("IPMV_DATA_DIR", previousDataDir);
             Environment.SetEnvironmentVariable("IPMV_CONFIG_DIR", previousConfigDir);
             Environment.SetEnvironmentVariable("IPMV_LOG_DIR", previousLogDir);
+        }
+    }
+
+    private static void AssertQueuedConfigPersistence(string smokeBaseDir)
+    {
+        var previousConfigDir = Environment.GetEnvironmentVariable("IPMV_CONFIG_DIR");
+        var previousLongConfigDir = Environment.GetEnvironmentVariable("IPMULTIVIEWER_CONFIG_DIR");
+        var queueConfigDir = Path.Combine(smokeBaseDir, "queued-config");
+        var config = new LocalConfig
+        {
+            ClientId = "queued-save-smoke",
+            ClientName = "Queued save smoke",
+            AlertSoundEnabled = false
+        };
+        config.AlertProfiles.Add(new AlertProfileConfig());
+        var now = DateTimeOffset.UtcNow;
+        for (var index = 0; index < 1250; index++)
+        {
+            config.AlertHistory.Add(new AlertRecord
+            {
+                Id = $"terminal-{index:0000}",
+                StreamId = "retention-smoke",
+                Type = "video.no_signal",
+                Severity = "warning",
+                Status = index % 2 == 0 ? "resolved" : "ignored",
+                Message = $"Terminal alert {index}",
+                StartedAt = now.AddSeconds(-index - 10),
+                UpdatedAt = now.AddSeconds(-index),
+                SourceClientId = config.ClientId
+            });
+        }
+
+        var activeIds = new[] { "active-open", "active-acknowledged", "active-snoozed" };
+        var activeStatuses = new[] { "open", "acknowledged", "snoozed" };
+        for (var index = 0; index < activeIds.Length; index++)
+        {
+            config.AlertHistory.Add(new AlertRecord
+            {
+                Id = activeIds[index],
+                StreamId = "retention-smoke",
+                Type = "video.freeze",
+                Severity = "error",
+                Status = activeStatuses[index],
+                Message = $"Active alert {index}",
+                StartedAt = now.AddSeconds(index),
+                UpdatedAt = now.AddSeconds(index),
+                SnoozedUntil = activeStatuses[index] == "snoozed" ? now.AddMinutes(5) : null,
+                SourceClientId = config.ClientId
+            });
+        }
+
+        Environment.SetEnvironmentVariable("IPMV_CONFIG_DIR", queueConfigDir);
+        Environment.SetEnvironmentVariable("IPMULTIVIEWER_CONFIG_DIR", null);
+        try
+        {
+            LocalConfigStore.QueueSave(config);
+            AssertAlertRetention(config, activeIds, "queued in-memory config");
+            LocalConfigStore.FlushQueuedSave(config);
+
+            var json = File.ReadAllText(LocalConfigStore.DefaultConfigPath);
+            if (json.Contains('\n') || json.Contains('\r'))
+            {
+                throw new InvalidOperationException("Queued configuration persistence regressed to indented JSON.");
+            }
+
+            var reloaded = LocalConfigStore.LoadOrCreate();
+            AssertAlertRetention(reloaded, activeIds, "reloaded queued config");
+
+            config.ClientName = "Queued save after exclusive lock";
+            long queueElapsedMs;
+            using (var lockStream = new FileStream(
+                       LocalConfigStore.DefaultConfigPath,
+                       FileMode.Open,
+                       FileAccess.Read,
+                       FileShare.None))
+            {
+                var stopwatch = Stopwatch.StartNew();
+                LocalConfigStore.QueueSave(config);
+                stopwatch.Stop();
+                queueElapsedMs = stopwatch.ElapsedMilliseconds;
+                Thread.Sleep(220);
+            }
+
+            LocalConfigStore.FlushQueuedSave(config);
+            if (queueElapsedMs > 100)
+            {
+                throw new InvalidOperationException(
+                    $"QueueSave blocked its caller for {queueElapsedMs}ms while the destination was locked; want <= 100ms.");
+            }
+
+            var afterLockedWrite = LocalConfigStore.LoadOrCreate();
+            AssertAlertRetention(afterLockedWrite, activeIds, "queued config after exclusive-lock retry");
+            if (!string.Equals(afterLockedWrite.ClientName, config.ClientName, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Queued configuration did not persist the latest payload after the file lock was released.");
+            }
+        }
+        finally
+        {
+            try
+            {
+                LocalConfigStore.FlushQueuedSave(config);
+            }
+            catch
+            {
+                // Preserve the primary smoke failure while ensuring the writer is drained before restoring its path.
+            }
+            Environment.SetEnvironmentVariable("IPMV_CONFIG_DIR", previousConfigDir);
+            Environment.SetEnvironmentVariable("IPMULTIVIEWER_CONFIG_DIR", previousLongConfigDir);
+        }
+    }
+
+    private static void AssertAlertRetention(LocalConfig config, IReadOnlyCollection<string> activeIds, string state)
+    {
+        var terminalCount = config.AlertHistory.Count(alert =>
+            string.Equals(alert.Status, "resolved", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(alert.Status, "ignored", StringComparison.OrdinalIgnoreCase));
+        if (terminalCount > LocalConfigStore.TerminalAlertRetentionLimit)
+        {
+            throw new InvalidOperationException(
+                $"{state} retained {terminalCount} terminal alerts; limit is {LocalConfigStore.TerminalAlertRetentionLimit}.");
+        }
+
+        var retainedActiveIds = config.AlertHistory
+            .Where(alert => activeIds.Contains(alert.Id, StringComparer.Ordinal))
+            .Select(alert => alert.Id)
+            .ToHashSet(StringComparer.Ordinal);
+        if (retainedActiveIds.Count != activeIds.Count)
+        {
+            throw new InvalidOperationException(
+                $"{state} lost active alerts: {string.Join(", ", activeIds.Where(id => !retainedActiveIds.Contains(id)))}.");
         }
     }
 
@@ -427,8 +556,8 @@ internal static class Program
         var analysisMediaOptions = ((IEnumerable<string>)Method(typeof(MainWindow), "LowLatencyVlcMediaOptions", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public)
             .Invoke(null, [true])!).ToList();
 
-        AssertNoLegacyCache(instanceOptions, "VLC instance");
-        AssertNoLegacyCache(mediaOptions, "VLC media");
+        AssertNoDeprecatedCache(instanceOptions, "VLC instance");
+        AssertNoDeprecatedCache(mediaOptions, "VLC media");
         if (!analysisMediaOptions.Contains(":no-audio", StringComparer.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("VLC analysis media options must disable audio.");
@@ -451,6 +580,15 @@ internal static class Program
             !ContainsArgumentPair(args, "-filter_threads", "1"))
         {
             throw new InvalidOperationException("FFmpeg input arguments must keep low-latency probe and buffer settings.");
+        }
+
+        var audioStatsFilter = (string)Method(sessionType, "BuildAudioStatsFilter", BindingFlags.Static | BindingFlags.NonPublic)
+            .Invoke(null, [])!;
+        if (!audioStatsFilter.Contains("measure_perchannel=RMS_level+Peak_level", StringComparison.Ordinal) ||
+            !audioStatsFilter.Contains("measure_overall=RMS_level+Peak_level", StringComparison.Ordinal) ||
+            !audioStatsFilter.Contains("file='pipe\\:1':direct=1", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"FFmpeg audio stats filter must keep bounded RMS/peak-only metadata on stdout: {audioStatsFilter}");
         }
 
         if (OperatingSystem.IsWindows() && !ContainsArgumentPair(args, "-hwaccel", "auto"))
@@ -652,12 +790,12 @@ internal static class Program
         }
     }
 
-    private static void AssertNoLegacyCache(IEnumerable<string> options, string label)
+    private static void AssertNoDeprecatedCache(IEnumerable<string> options, string label)
     {
         var list = options.ToList();
         if (list.Any(option => option.Contains("caching=300", StringComparison.OrdinalIgnoreCase)))
         {
-            throw new InvalidOperationException($"{label} options still contain legacy 300ms caching.");
+            throw new InvalidOperationException($"{label} options still contain obsolete 300ms caching.");
         }
         if (!list.Any(option => option.Contains("network-caching=100", StringComparison.OrdinalIgnoreCase)) ||
             !list.Any(option => option.Contains("live-caching=100", StringComparison.OrdinalIgnoreCase)))
@@ -700,10 +838,10 @@ internal static class Program
 
         var meterViewType = DesktopType("AudioMeterView");
         var views = (IList)Activator.CreateInstance(typeof(List<>).MakeGenericType(meterViewType))!;
-        var panel = Method(typeof(MainWindow), "CreateAudioMeterSidePanel", BindingFlags.Static | BindingFlags.NonPublic)
-            .Invoke(null, [left, HorizontalAlignment.Left, views]);
-        _ = Method(typeof(MainWindow), "CreateAudioMeterSidePanel", BindingFlags.Static | BindingFlags.NonPublic)
-            .Invoke(null, [right, HorizontalAlignment.Right, views]);
+        var panel = Method(typeof(MainWindow), "CreateAudioMeterSidePanel", BindingFlags.Instance | BindingFlags.NonPublic)
+            .Invoke(window, [left, HorizontalAlignment.Left, views]);
+        _ = Method(typeof(MainWindow), "CreateAudioMeterSidePanel", BindingFlags.Instance | BindingFlags.NonPublic)
+            .Invoke(window, [right, HorizontalAlignment.Right, views]);
         if (panel is not Border)
         {
             throw new InvalidOperationException("Audio meter side panel did not render as a video-side overlay border.");
@@ -802,13 +940,12 @@ internal static class Program
             .Invoke(window, [null, EventArgs.Empty]);
         var displayedLevel = (double)meterViewType.GetProperty("DisplayedLevelRatio")!.GetValue(firstView)!;
         var displayedPeak = (double)meterViewType.GetProperty("DisplayedPeakRatio")!.GetValue(firstView)!;
-        if (displayedLevel <= 0.10 ||
-            displayedLevel >= 0.80 ||
+        if (Math.Abs(displayedLevel - 0.80) > 0.001 ||
             displayedPeak >= 0.85 ||
             displayedPeak < 0.35 ||
             Math.Abs(fill.Height - audioMeterHeight) > 0.001)
         {
-            throw new InvalidOperationException($"Audio meter time-based smoothing was unexpected: level={displayedLevel}, peak={displayedPeak}.");
+            throw new InvalidOperationException($"Audio meter immediate attack / time-based release was unexpected: level={displayedLevel}, peak={displayedPeak}.");
         }
 
         meterViewType.GetProperty("TargetLevelRatio")!.SetValue(firstView, 0.05);
@@ -1054,6 +1191,22 @@ internal static class Program
             if (targetFps < 24)
             {
                 throw new InvalidOperationException($"FFmpeg tile playback target FPS is too low for live monitoring: {targetFps:0.###}.");
+            }
+
+            var outputWidth = Convert.ToInt32(sessionType.GetProperty("OutputWidth")!.GetValue(session), CultureInfo.InvariantCulture);
+            var outputHeight = Convert.ToInt32(sessionType.GetProperty("OutputHeight")!.GetValue(session), CultureInfo.InvariantCulture);
+            var bitmap = sessionType.GetProperty("Bitmap")!.GetValue(session)
+                ?? throw new InvalidOperationException("Fallback FFmpeg bitmap was unavailable.");
+            var pixelWidth = Convert.ToInt32(bitmap.GetType().GetProperty("PixelWidth")!.GetValue(bitmap), CultureInfo.InvariantCulture);
+            var pixelHeight = Convert.ToInt32(bitmap.GetType().GetProperty("PixelHeight")!.GetValue(bitmap), CultureInfo.InvariantCulture);
+            var fallbackFilter = (string)Method(sessionType, "BuildFallbackVideoFilter", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, [])!;
+            if (outputWidth != 426 || outputHeight != 240 || pixelWidth != 426 || pixelHeight != 240 ||
+                !fallbackFilter.Contains("scale=426:240:flags=fast_bilinear", StringComparison.OrdinalIgnoreCase) ||
+                fallbackFilter.Contains("force_original_aspect_ratio", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Fallback FFmpeg display contract changed: output={outputWidth}x{outputHeight}, bitmap={pixelWidth}x{pixelHeight}, filter={fallbackFilter}");
             }
 
             var frameBytes = (int)(sessionType.GetField("FrameBytes", BindingFlags.Static | BindingFlags.NonPublic)!
@@ -1426,10 +1579,21 @@ internal static class Program
             var frameBytes = (int)(monitorType.GetField("FrameBytes", BindingFlags.Static | BindingFlags.NonPublic)!
                 .GetRawConstantValue() ?? throw new InvalidOperationException("FrameBytes constant was unavailable."));
             var frame = new byte[frameBytes];
-            Method(monitorType, "UpdateSnapshot").Invoke(monitor, [frame]);
+            var updateSnapshot = Method(monitorType, "UpdateSnapshot");
+            updateSnapshot.Invoke(monitor, [frame]);
             if (blackCallbacks != 2)
             {
                 throw new InvalidOperationException($"Sidecar black frame callback count = {blackCallbacks}, want 2.");
+            }
+
+            for (var index = 1; index < 120; index++)
+            {
+                updateSnapshot.Invoke(monitor, [frame]);
+            }
+            if (blackCallbacks != 2)
+            {
+                throw new InvalidOperationException(
+                    $"Continuous sidecar black frames retriggered callbacks {blackCallbacks} times; want one rising edge per subscriber.");
             }
 
             var tryGetSnapshot = Method(monitorType, "TryGetSnapshot");
@@ -1440,10 +1604,18 @@ internal static class Program
             }
 
             Array.Fill(frame, (byte)255);
-            Method(monitorType, "UpdateSnapshot").Invoke(monitor, [frame]);
+            updateSnapshot.Invoke(monitor, [frame]);
             if (blackCallbacks != 2)
             {
                 throw new InvalidOperationException("FFmpeg sidecar monitor fired black callback for a white frame.");
+            }
+
+            Array.Clear(frame);
+            updateSnapshot.Invoke(monitor, [frame]);
+            if (blackCallbacks != 4)
+            {
+                throw new InvalidOperationException(
+                    $"Sidecar black callbacks did not fire once per subscriber after a white-frame reset; callbacks={blackCallbacks}.");
             }
         }
         finally
@@ -1479,14 +1651,24 @@ internal static class Program
         try
         {
             var parse = Method(sessionType, "TryParseAudioStatsLine");
-            AssertParsedAudioLine(parse, session, "lavfi.astats.Overall.RMS_level=-20.0");
-            AssertParsedAudioLine(parse, session, "lavfi.astats.Overall.Peak_level=-2.0");
-            AssertParsedAudioLine(parse, session, "lavfi.astats.1.RMS_level=-18.5");
+            AssertParsedAudioLine(parse, session, "frame:0    pts:60000    pts_time:1.25");
             AssertParsedAudioLine(parse, session, "lavfi.astats.1.Peak_level=-3.0");
-            AssertParsedAudioLine(parse, session, "lavfi.astats.2.RMS_level=-24.25");
+            AssertParsedAudioLine(parse, session, "lavfi.astats.1.RMS_level=-18.5");
             AssertParsedAudioLine(parse, session, "lavfi.astats.2.Peak_level=-0.5");
+            AssertParsedAudioLine(parse, session, "lavfi.astats.2.RMS_level=-24.25");
             AssertParsedAudioLine(parse, session, "lavfi.astats.3.RMS_level=-30.0");
             AssertParsedAudioLine(parse, session, "lavfi.astats.4.Peak_level=-4.0");
+            AssertParsedAudioLine(parse, session, "lavfi.astats.Overall.Peak_level=-2.0");
+            AssertParsedAudioLine(parse, session, "lavfi.astats.Overall.RMS_level=-20.0");
+
+            var parsedSnapshot = Field(session, "_audioSnapshot").GetValue(session)
+                ?? throw new InvalidOperationException("FFmpeg audio stats parser did not assemble a PTS-stamped audio snapshot.");
+            AssertNear(
+                (double)parsedSnapshot.GetType().GetProperty("MediaTimeSeconds")!.GetValue(parsedSnapshot)!,
+                1.25,
+                "audio media PTS");
+
+            Field(session, "_lastPresentedVideoPtsSeconds").SetValue(session, 1.30);
 
             var args = new object?[] { null };
             if ((bool)Method(sessionType, "TryGetAudioSnapshot").Invoke(session, args)! != true || args[0] is null)
@@ -1520,6 +1702,64 @@ internal static class Program
             {
                 throw new InvalidOperationException("FFmpeg audio stats parser did not mark near-clip channel peak.");
             }
+
+            AssertParsedAudioLine(parse, session, "frame:1    pts:84000    pts_time:1.75");
+            AssertParsedAudioLine(parse, session, "lavfi.astats.1.Peak_level=-0.25");
+            AssertParsedAudioLine(parse, session, "lavfi.astats.1.RMS_level=-4.0");
+            AssertParsedAudioLine(parse, session, "lavfi.astats.Overall.Peak_level=-0.25");
+            AssertParsedAudioLine(parse, session, "lavfi.astats.Overall.RMS_level=-4.0");
+
+            args[0] = null;
+            _ = Method(sessionType, "TryGetAudioSnapshot").Invoke(session, args);
+            AssertNear(
+                (double)args[0]!.GetType().GetProperty("MediaTimeSeconds")!.GetValue(args[0])!,
+                1.25,
+                "future audio held behind presented video");
+
+            Field(session, "_lastPresentedVideoPtsSeconds").SetValue(session, 1.80);
+            args[0] = null;
+            _ = Method(sessionType, "TryGetAudioSnapshot").Invoke(session, args);
+            AssertNear(
+                (double)args[0]!.GetType().GetProperty("MediaTimeSeconds")!.GetValue(args[0])!,
+                1.75,
+                "audio released with presented video");
+
+            var videoPtsArgs = new object?[] { "42 3.5", null, null };
+            if (!(bool)Method(sessionType, "TryParseVideoPtsLine", BindingFlags.Static | BindingFlags.NonPublic)
+                    .Invoke(null, videoPtsArgs)! ||
+                (long)videoPtsArgs[1]! != 42 ||
+                Math.Abs((double)videoPtsArgs[2]! - 3.5) > 0.001)
+            {
+                throw new InvalidOperationException("FFmpeg video PTS stats parser did not preserve ordinal/time.");
+            }
+
+            var showInfoPtsArgs = new object?[]
+            {
+                "[Parsed_showinfo_4 @ 000001] n:   7 pts:  11200 pts_time:0.233333 duration:1600",
+                null,
+                null
+            };
+            if (!(bool)Method(sessionType, "TryParseShowInfoVideoPtsLine", BindingFlags.Static | BindingFlags.NonPublic)
+                    .Invoke(null, showInfoPtsArgs)! ||
+                (long)showInfoPtsArgs[1]! != 7 ||
+                Math.Abs((double)showInfoPtsArgs[2]! - 0.233333) > 0.001)
+            {
+                throw new InvalidOperationException("Fallback FFmpeg showinfo PTS parser did not preserve ordinal/time.");
+            }
+
+            Field(session, "_audioMetadataGeneration").SetValue(session, 2);
+            var generationParse = MethodWithParameterTypes(
+                sessionType,
+                "TryParseAudioStatsLineForGeneration",
+                [typeof(string), typeof(int)]);
+            if ((bool)generationParse.Invoke(session, ["frame:9 pts:999 pts_time:9.0", 1])!)
+            {
+                throw new InvalidOperationException("A stale FFmpeg audio metadata reader modified the active parser generation.");
+            }
+            AssertNear(
+                (double)Field(session, "_activeAudioPtsSeconds").GetValue(session)!,
+                1.75,
+                "stale audio metadata generation rejection");
         }
         finally
         {
@@ -1532,6 +1772,105 @@ internal static class Program
         if ((bool)parse.Invoke(session, [line])! != true)
         {
             throw new InvalidOperationException($"FFmpeg audio stats parser rejected line: {line}");
+        }
+    }
+
+    private static void AssertMissingVideoPtsFallbackIsBounded()
+    {
+        var sessionType = DesktopType("FfmpegPlaybackSession");
+        var contextType = sessionType.GetNestedType("FfmpegOutputPipeContext", BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("FFmpeg output pipe context was not available.");
+        using var cts = new CancellationTokenSource();
+        var context = Activator.CreateInstance(
+            contextType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [cts.Token, true, true],
+            culture: null) ?? throw new InvalidOperationException("Failed to create an FFmpeg output pipe context.");
+        try
+        {
+            var waitForPts = Method(
+                sessionType,
+                "WaitForVideoPtsAsync",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            var firstWait = Stopwatch.StartNew();
+            var firstResult = ((System.Threading.Tasks.Task<double>)waitForPts.Invoke(
+                null,
+                [context, 0L, CancellationToken.None])!).GetAwaiter().GetResult();
+            firstWait.Stop();
+            if (!double.IsNaN(firstResult) || firstWait.Elapsed < TimeSpan.FromMilliseconds(40))
+            {
+                throw new InvalidOperationException(
+                    $"Initial missing video PTS did not use the bounded wait: result={firstResult}, elapsed={firstWait.Elapsed.TotalMilliseconds:0.0}ms.");
+            }
+
+            var fallbackWait = Stopwatch.StartNew();
+            var fallbackResult = ((System.Threading.Tasks.Task<double>)waitForPts.Invoke(
+                null,
+                [context, 1L, CancellationToken.None])!).GetAwaiter().GetResult();
+            fallbackWait.Stop();
+            if (!double.IsNaN(fallbackResult) || fallbackWait.Elapsed > TimeSpan.FromMilliseconds(30))
+            {
+                throw new InvalidOperationException(
+                    $"Missing video PTS fallback blocked subsequent frames for {fallbackWait.Elapsed.TotalMilliseconds:0.0}ms.");
+            }
+
+            var storePts = Method(
+                sessionType,
+                "StoreVideoPts",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            for (var ordinal = 2L; ordinal < 1002; ordinal++)
+            {
+                storePts.Invoke(null, [context, ordinal, ordinal / 30.0]);
+            }
+
+            var bufferedPts = contextType.GetProperty("VideoPtsByOrdinal")!.GetValue(context)!;
+            var bufferedCount = Convert.ToInt32(bufferedPts.GetType().GetProperty("Count")!.GetValue(bufferedPts));
+            var wakeSignal = contextType.GetProperty("VideoPtsAvailable")!.GetValue(context)!;
+            var wakeCount = Convert.ToInt32(wakeSignal.GetType().GetProperty("CurrentCount")!.GetValue(wakeSignal));
+            if (bufferedCount > 129 || wakeCount > 1)
+            {
+                throw new InvalidOperationException(
+                    $"Video PTS fallback buffers were unbounded: entries={bufferedCount}, wakeSignals={wakeCount}.");
+            }
+
+            var recoveredResult = ((System.Threading.Tasks.Task<double>)waitForPts.Invoke(
+                null,
+                [context, 1001L, CancellationToken.None])!).GetAwaiter().GetResult();
+            AssertNear(recoveredResult, 1001 / 30.0, "video PTS fallback recovery");
+            var extrapolatedResult = ((System.Threading.Tasks.Task<double>)waitForPts.Invoke(
+                null,
+                [context, 1002L, CancellationToken.None])!).GetAwaiter().GetResult();
+            AssertNear(extrapolatedResult, 1002 / 30.0, "bounded video PTS extrapolation");
+
+            var unsupportedContext = Activator.CreateInstance(
+                contextType,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                binder: null,
+                args: [cts.Token, false, false],
+                culture: null) ?? throw new InvalidOperationException("Failed to create a no-PTS FFmpeg output pipe context.");
+            try
+            {
+                var unsupportedWait = Stopwatch.StartNew();
+                var unsupportedResult = ((System.Threading.Tasks.Task<double>)waitForPts.Invoke(
+                    null,
+                    [unsupportedContext, 0L, CancellationToken.None])!).GetAwaiter().GetResult();
+                unsupportedWait.Stop();
+                if (!double.IsNaN(unsupportedResult) || unsupportedWait.Elapsed > TimeSpan.FromMilliseconds(30))
+                {
+                    throw new InvalidOperationException(
+                        $"Unsupported FFmpeg PTS fallback blocked video for {unsupportedWait.Elapsed.TotalMilliseconds:0.0}ms.");
+                }
+            }
+            finally
+            {
+                DisposeReflective(unsupportedContext);
+            }
+        }
+        finally
+        {
+            cts.Cancel();
+            DisposeReflective(context);
         }
     }
 
@@ -1684,7 +2023,7 @@ internal static class Program
         }
     }
 
-    private static (object? SessionA, object? SessionB) AssertTwoFfmpegSessionsCanRun()
+    private static (object? SessionA, object? SessionB) AssertTwoFfmpegSessionsCanRun(string workDir)
     {
         var ffmpeg = FindOnPath("ffmpeg.exe") ?? FindOnPath("ffmpeg");
         if (ffmpeg is null)
@@ -1693,7 +2032,6 @@ internal static class Program
             return (null, null);
         }
 
-        var workDir = Path.Combine(Path.GetTempPath(), $"ipmv-desktop-smoke-{Guid.NewGuid():N}");
         Directory.CreateDirectory(workDir);
         var fileA = Path.Combine(workDir, "stream-a.mp4");
         var fileB = Path.Combine(workDir, "stream-b.mp4");
@@ -1701,6 +2039,7 @@ internal static class Program
         RunFfmpeg(ffmpeg, "-y", "-f", "lavfi", "-i", "smptebars=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "3", "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac", fileB);
 
         var sessionType = DesktopType("FfmpegPlaybackSession");
+        AssertShowInfoVideoPtsFallbackCanRun(sessionType, ffmpeg, fileA);
         var sessionA = CreateFfmpegSession(sessionType, ffmpeg, fileA);
         var sessionB = CreateFfmpegSession(sessionType, ffmpeg, fileB);
         Method(sessionType, "Start").Invoke(sessionA, []);
@@ -1752,8 +2091,63 @@ internal static class Program
             throw new InvalidOperationException("Two FFmpeg playback/analysis sessions did not run concurrently.");
         }
 
+        AssertAudioFollowsPresentedVideoPts(sessionType, sessionA, "ffmpeg_session_a");
+        AssertAudioFollowsPresentedVideoPts(sessionType, sessionB, "ffmpeg_session_b");
+
         AssertTwoSrtLoopbackSessionsCanRun(sessionType, ffmpeg);
         return (sessionA, sessionB);
+    }
+
+    private static void AssertShowInfoVideoPtsFallbackCanRun(Type sessionType, string ffmpeg, string inputFile)
+    {
+        var cache = sessionType.GetField("VideoPtsStatsSupport", BindingFlags.Static | BindingFlags.NonPublic)!
+            .GetValue(null) ?? throw new InvalidOperationException("FFmpeg PTS capability cache was not available.");
+        var clearCache = cache.GetType().GetMethod("Clear")!;
+        var tryAdd = cache.GetType().GetMethod("TryAdd")!;
+        clearCache.Invoke(cache, []);
+        _ = tryAdd.Invoke(cache, [ffmpeg, new Lazy<bool>(() => false)]);
+
+        var session = CreateFfmpegSession(sessionType, ffmpeg, inputFile);
+        try
+        {
+            var startElapsed = Stopwatch.StartNew();
+            Method(sessionType, "Start").Invoke(session, []);
+            startElapsed.Stop();
+            if (startElapsed.Elapsed > TimeSpan.FromMilliseconds(100))
+            {
+                throw new InvalidOperationException(
+                    $"FFmpeg capability detection blocked Start for {startElapsed.Elapsed.TotalMilliseconds:0.0}ms.");
+            }
+
+            var hasFrame = sessionType.GetProperty("HasPresentedFrame")!;
+            var tryAudio = Method(sessionType, "TryGetAudioSnapshot");
+            var gotFrame = false;
+            var gotAudio = false;
+            var deadline = DateTime.UtcNow.AddSeconds(8);
+            while (DateTime.UtcNow < deadline)
+            {
+                Pump(null, 100);
+                gotFrame = (bool)hasFrame.GetValue(session)!;
+                gotAudio = (bool)tryAudio.Invoke(session, [null])!;
+                if (gotFrame && gotAudio)
+                {
+                    break;
+                }
+            }
+
+            if (!gotFrame || !gotAudio)
+            {
+                throw new InvalidOperationException(
+                    $"Fallback FFmpeg showinfo path did not preserve video/audio monitoring: frame={gotFrame}, audio={gotAudio}.");
+            }
+
+            AssertAudioFollowsPresentedVideoPts(sessionType, session, "ffmpeg_showinfo_fallback");
+        }
+        finally
+        {
+            DisposeReflective(session);
+            clearCache.Invoke(cache, []);
+        }
     }
 
     private static void AssertTwoSrtLoopbackSessionsCanRun(Type sessionType, string ffmpeg)
@@ -1846,6 +2240,11 @@ internal static class Program
             {
                 throw new InvalidOperationException($"SRT loopback presented FPS must stay above {MinimumSmoothPresentedFps:0.0} fps.");
             }
+
+            _ = tryAudio.Invoke(sessionA, [null]);
+            _ = tryAudio.Invoke(sessionB, [null]);
+            AssertAudioFollowsPresentedVideoPts(sessionType, sessionA, "srt_loopback_a");
+            AssertAudioFollowsPresentedVideoPts(sessionType, sessionB, "srt_loopback_b");
         }
         finally
         {
@@ -1853,6 +2252,42 @@ internal static class Program
             DisposeReflective(sessionB);
             StopProcess(senderA);
             StopProcess(senderB);
+        }
+    }
+
+    private static void AssertAudioFollowsPresentedVideoPts(Type sessionType, object session, string label)
+    {
+        var videoPts = double.NaN;
+        var audioPts = double.NaN;
+        var offsetMs = double.NaN;
+        var deadline = DateTime.UtcNow.AddSeconds(2);
+        do
+        {
+            videoPts = (double)sessionType.GetProperty("LastPresentedVideoPtsSeconds")!.GetValue(session)!;
+            audioPts = (double)sessionType.GetProperty("LastPresentedAudioPtsSeconds")!.GetValue(session)!;
+            offsetMs = (double)sessionType.GetProperty("LastAudioVideoSyncOffsetMs")!.GetValue(session)!;
+            if (double.IsFinite(videoPts) &&
+                double.IsFinite(audioPts) &&
+                double.IsFinite(offsetMs) &&
+                offsetMs >= -30 &&
+                offsetMs <= 150)
+            {
+                break;
+            }
+
+            Pump(null, 50);
+        }
+        while (DateTime.UtcNow < deadline);
+
+        Console.WriteLine($"{label}_sync videoPts={videoPts:0.000} audioPts={audioPts:0.000} offsetMs={offsetMs:0.0}");
+        if (!double.IsFinite(videoPts) ||
+            !double.IsFinite(audioPts) ||
+            !double.IsFinite(offsetMs) ||
+            offsetMs < -30 ||
+            offsetMs > 150)
+        {
+            throw new InvalidOperationException(
+                $"{label} audio meter must follow the presented video PTS within -30..150ms; offset={offsetMs:0.0}ms.");
         }
     }
 
@@ -2032,10 +2467,13 @@ internal static class Program
     {
         public WpfAppScope()
         {
-            if (Application.Current is null)
+            var application = Application.Current ?? new Application();
+            application.Resources.MergedDictionaries.Add(new ResourceDictionary
             {
-                _ = new Application();
-            }
+                Source = new Uri(
+                    "pack://application:,,,/IPMultiViewer;component/DirectMatrixTheme.xaml",
+                    UriKind.Absolute)
+            });
         }
 
         public void Dispose()

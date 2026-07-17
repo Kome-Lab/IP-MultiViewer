@@ -1,0 +1,47 @@
+name: Windows Verification
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-windows:
+    name: Current desktop, live meters, and publish
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Verify FFmpeg SRT support
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ffmpeg = Get-Command ffmpeg -ErrorAction Stop
+          $protocols = & $ffmpeg.Source -hide_banner -protocols 2>$null
+          if ($protocols -notcontains "  srt" -and $protocols -notcontains "srt") {
+            throw "The Windows runner FFmpeg build does not expose the srt protocol."
+          }
+
+      - name: Run composite Windows verification
+        shell: pwsh
+        run: ./scripts/verify-windows.ps1 -PublishDryRun
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: windows-verification
+          path: artifacts/windows-qa/*
+          if-no-files-found: warn

@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace IPMultiViewer.Desktop;
 
@@ -22,9 +23,9 @@ public sealed class LocalConfig
     public bool ServerSyncEnabled { get; set; }
     public string ClientId { get; set; } = "";
     public string ClientName { get; set; } = "";
-    public string ClientVersion { get; set; } = "0.1.0";
     public string ClientToken { get; set; } = "";
     public string ServerUrl { get; set; } = "";
+    public string AudioMeterMode { get; set; } = "vu";
 }
 
 public sealed class StreamConfig
@@ -115,6 +116,7 @@ public sealed class TileViewModel
 
 public static class LocalConfigStore
 {
+    public const int TerminalAlertRetentionLimit = 1000;
     private const string DataDirectoryEnvironmentVariable = "IPMV_DATA_DIR";
     private const string LongDataDirectoryEnvironmentVariable = "IPMULTIVIEWER_DATA_DIR";
     private const string ConfigDirectoryEnvironmentVariable = "IPMV_CONFIG_DIR";
@@ -128,6 +130,15 @@ public static class LocalConfigStore
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
+    private static readonly JsonSerializerOptions CompactOptions = new(Options)
+    {
+        WriteIndented = false
+    };
+    private static readonly object QueuedSaveSync = new();
+    private static QueuedSaveRequest? _queuedSaveRequest;
+    private static bool _queuedSaveWorkerRunning;
+    private static Task? _queuedSaveWorker;
+    private static Exception? _queuedSaveError;
 
     private static string BaseDirectory =>
         EnvironmentPath(DataDirectoryEnvironmentVariable) ??
@@ -146,6 +157,8 @@ public static class LocalConfigStore
 
     public static string DefaultConfigPath => Path.Combine(ConfigDirectory, "local-config.json");
 
+    private static string PreviousPreviewConfigPath => Path.Combine(ConfigDirectory, "local-config.next.json");
+
     private static string? EnvironmentPath(string name)
     {
         var value = Environment.GetEnvironmentVariable(name);
@@ -158,6 +171,15 @@ public static class LocalConfigStore
     {
         Directory.CreateDirectory(ConfigDirectory);
         Directory.CreateDirectory(LogDirectory);
+        if (File.Exists(PreviousPreviewConfigPath) &&
+            (!File.Exists(DefaultConfigPath) ||
+             File.GetLastWriteTimeUtc(PreviousPreviewConfigPath) > File.GetLastWriteTimeUtc(DefaultConfigPath)))
+        {
+            var migrated = LoadFrom(PreviousPreviewConfigPath);
+            Save(migrated);
+            return migrated;
+        }
+
         if (!File.Exists(DefaultConfigPath))
         {
             var created = CreateDefault();
@@ -165,10 +187,20 @@ public static class LocalConfigStore
             return created;
         }
 
-        using var stream = File.OpenRead(DefaultConfigPath);
-        var config = JsonSerializer.Deserialize<LocalConfig>(stream, Options) ?? CreateDefault();
+        LocalConfig config;
+        using (var stream = File.OpenRead(DefaultConfigPath))
+        {
+            config = JsonSerializer.Deserialize<LocalConfig>(stream, Options) ?? CreateDefault();
+        }
         EnsureClientIdentity(config);
         EnsureAlertDefaults(config);
+        EnsureUiDefaults(config);
+        if (TrimTerminalAlertHistory(config) > 0)
+        {
+            PreservePreRetentionConfig(DefaultConfigPath);
+            Save(config);
+        }
+
         return config;
     }
 
@@ -178,21 +210,64 @@ public static class LocalConfigStore
         var config = JsonSerializer.Deserialize<LocalConfig>(stream, Options) ?? CreateDefault();
         EnsureClientIdentity(config);
         EnsureAlertDefaults(config);
+        EnsureUiDefaults(config);
+        TrimTerminalAlertHistory(config);
         return config;
     }
 
     public static void Save(LocalConfig config)
     {
-        EnsureClientIdentity(config);
-        EnsureAlertDefaults(config);
+        PrepareForSave(config);
         Directory.CreateDirectory(ConfigDirectory);
         SaveTo(config, DefaultConfigPath);
     }
 
+    public static void QueueSave(LocalConfig config)
+    {
+        PrepareForSave(config);
+        var payload = JsonSerializer.SerializeToUtf8Bytes(config, CompactOptions);
+        lock (QueuedSaveSync)
+        {
+            _queuedSaveRequest = new QueuedSaveRequest(DefaultConfigPath, payload);
+            if (_queuedSaveWorkerRunning)
+            {
+                return;
+            }
+
+            _queuedSaveWorkerRunning = true;
+            _queuedSaveWorker = Task.Run(DrainQueuedSaves);
+        }
+    }
+
+    public static void FlushQueuedSave(LocalConfig config)
+    {
+        QueueSave(config);
+        while (true)
+        {
+            Task? worker;
+            lock (QueuedSaveSync)
+            {
+                if (!_queuedSaveWorkerRunning && _queuedSaveRequest is null)
+                {
+                    if (_queuedSaveError is { } error)
+                    {
+                        _queuedSaveError = null;
+                        throw new IOException("Queued local configuration save failed.", error);
+                    }
+
+                    return;
+                }
+
+                worker = _queuedSaveWorker;
+            }
+
+            worker?.GetAwaiter().GetResult();
+        }
+    }
+
     public static void SaveTo(LocalConfig config, string path)
     {
-        EnsureClientIdentity(config);
-        EnsureAlertDefaults(config);
+        PrepareForSave(config);
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory))
         {
@@ -224,6 +299,126 @@ public static class LocalConfigStore
             }
         }
     }
+
+    private static void PrepareForSave(LocalConfig config)
+    {
+        EnsureClientIdentity(config);
+        EnsureAlertDefaults(config);
+        EnsureUiDefaults(config);
+        TrimTerminalAlertHistory(config);
+    }
+
+    private static int TrimTerminalAlertHistory(LocalConfig config)
+    {
+        var terminalToRemove = config.AlertHistory
+            .Where(alert => IsTerminalAlertStatus(alert.Status))
+            .OrderByDescending(alert => alert.UpdatedAt == default ? alert.StartedAt : alert.UpdatedAt)
+            .Skip(TerminalAlertRetentionLimit)
+            .ToHashSet();
+        if (terminalToRemove.Count > 0)
+        {
+            config.AlertHistory = new ObservableCollection<AlertRecord>(
+                config.AlertHistory.Where(alert => !terminalToRemove.Contains(alert)));
+        }
+
+        return terminalToRemove.Count;
+    }
+
+    private static bool IsTerminalAlertStatus(string status)
+    {
+        return string.Equals(status, "resolved", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "ignored", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void PreservePreRetentionConfig(string sourcePath)
+    {
+        try
+        {
+            var directory = Path.GetDirectoryName(sourcePath) ?? ConfigDirectory;
+            var backupPath = Path.Combine(
+                directory,
+                $"{Path.GetFileNameWithoutExtension(sourcePath)}.history-before-retention.json");
+            if (!File.Exists(backupPath))
+            {
+                File.Copy(sourcePath, backupPath, overwrite: false);
+            }
+        }
+        catch
+        {
+            // Retention must not prevent startup. The normal atomic save remains authoritative.
+        }
+    }
+
+    private static void DrainQueuedSaves()
+    {
+        while (true)
+        {
+            QueuedSaveRequest request;
+            lock (QueuedSaveSync)
+            {
+                if (_queuedSaveRequest is null)
+                {
+                    _queuedSaveWorkerRunning = false;
+                    return;
+                }
+
+                request = _queuedSaveRequest;
+                _queuedSaveRequest = null;
+            }
+
+            try
+            {
+                SavePayloadTo(request.Payload, request.Path);
+                lock (QueuedSaveSync)
+                {
+                    _queuedSaveError = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                lock (QueuedSaveSync)
+                {
+                    _queuedSaveError = ex;
+                }
+            }
+        }
+    }
+
+    private static void SavePayloadTo(byte[] payload, string path)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var tempPath = Path.Combine(directory ?? Path.GetTempPath(), $".{Path.GetFileName(path)}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            using (var stream = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
+            {
+                stream.Write(payload);
+            }
+
+            ReplaceWithRetry(tempPath, path);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+            }
+            catch
+            {
+                // Best effort cleanup for failed writes.
+            }
+        }
+    }
+
+    private sealed record QueuedSaveRequest(string Path, byte[] Payload);
 
     private static void ReplaceWithRetry(string sourcePath, string destinationPath)
     {
@@ -285,6 +480,13 @@ public static class LocalConfigStore
         {
             config.ClientName = Environment.MachineName;
         }
+    }
+
+    private static void EnsureUiDefaults(LocalConfig config)
+    {
+        config.AudioMeterMode = string.Equals(config.AudioMeterMode, "peak", StringComparison.OrdinalIgnoreCase)
+            ? "peak"
+            : "vu";
     }
 
     private static void EnsureAlertDefaults(LocalConfig config)

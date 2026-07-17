@@ -1,0 +1,225 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Color x:Key="NextAppBackgroundColor">#071019</Color>
+  <Color x:Key="NextTitleBarColor">#050B11</Color>
+  <Color x:Key="NextCommandBarColor">#0A141D</Color>
+  <Color x:Key="NextSurfaceColor">#0D1821</Color>
+  <Color x:Key="NextSurfaceRaisedColor">#111D27</Color>
+  <Color x:Key="NextSurfaceHoverColor">#192A36</Color>
+  <Color x:Key="NextBorderColor">#33444F</Color>
+  <Color x:Key="NextBorderSoftColor">#1E2D37</Color>
+  <Color x:Key="NextTextPrimaryColor">#F3F6F8</Color>
+  <Color x:Key="NextTextSecondaryColor">#CBD2D8</Color>
+  <Color x:Key="NextTextMutedColor">#8A959E</Color>
+  <Color x:Key="NextAccentColor">#00A8F3</Color>
+  <Color x:Key="NextDangerColor">#CB171B</Color>
+  <Color x:Key="NextSuccessColor">#31BF72</Color>
+
+  <SolidColorBrush x:Key="NextAppBackgroundBrush" Color="{StaticResource NextAppBackgroundColor}" />
+  <SolidColorBrush x:Key="NextTitleBarBrush" Color="{StaticResource NextTitleBarColor}" />
+  <SolidColorBrush x:Key="NextCommandBarBrush" Color="{StaticResource NextCommandBarColor}" />
+  <SolidColorBrush x:Key="NextSurfaceBrush" Color="{StaticResource NextSurfaceColor}" />
+  <SolidColorBrush x:Key="NextSurfaceRaisedBrush" Color="{StaticResource NextSurfaceRaisedColor}" />
+  <SolidColorBrush x:Key="NextSurfaceHoverBrush" Color="{StaticResource NextSurfaceHoverColor}" />
+  <SolidColorBrush x:Key="NextBorderBrush" Color="{StaticResource NextBorderColor}" />
+  <SolidColorBrush x:Key="NextBorderSoftBrush" Color="{StaticResource NextBorderSoftColor}" />
+  <SolidColorBrush x:Key="NextTextPrimaryBrush" Color="{StaticResource NextTextPrimaryColor}" />
+  <SolidColorBrush x:Key="NextTextSecondaryBrush" Color="{StaticResource NextTextSecondaryColor}" />
+  <SolidColorBrush x:Key="NextTextMutedBrush" Color="{StaticResource NextTextMutedColor}" />
+  <SolidColorBrush x:Key="NextAccentBrush" Color="{StaticResource NextAccentColor}" />
+  <SolidColorBrush x:Key="NextDangerBrush" Color="{StaticResource NextDangerColor}" />
+  <SolidColorBrush x:Key="NextSuccessBrush" Color="{StaticResource NextSuccessColor}" />
+
+  <Style TargetType="Button">
+    <Setter Property="Background" Value="{StaticResource NextSurfaceRaisedBrush}" />
+    <Setter Property="BorderBrush" Value="{StaticResource NextBorderBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="Foreground" Value="{StaticResource NextTextPrimaryBrush}" />
+    <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
+    <Setter Property="FontSize" Value="13" />
+    <Setter Property="FontWeight" Value="Normal" />
+    <Setter Property="Padding" Value="13,0" />
+    <Setter Property="Cursor" Value="Hand" />
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Border x:Name="Chrome"
+                  Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#111D27, TargetNullValue=#111D27}"
+                  BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}"
+                  CornerRadius="3"
+                  SnapsToDevicePixels="True">
+            <ContentPresenter HorizontalAlignment="Center"
+                              VerticalAlignment="Center"
+                              Margin="{TemplateBinding Padding}"
+                              RecognizesAccessKey="True" />
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+              <Setter TargetName="Chrome" Property="Opacity" Value="0.88" />
+              <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource NextAccentBrush}" />
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+              <Setter TargetName="Chrome" Property="Opacity" Value="0.68" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+              <Setter TargetName="Chrome" Property="Opacity" Value="0.42" />
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+    <Setter Property="Background" Value="#079CE4" />
+    <Setter Property="BorderBrush" Value="#14B4FF" />
+    <Setter Property="Foreground" Value="White" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+  </Style>
+
+  <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+    <Setter Property="Background" Value="#BF1116" />
+    <Setter Property="BorderBrush" Value="#F12B31" />
+    <Setter Property="Foreground" Value="White" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+  </Style>
+
+  <Style x:Key="CommandButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+    <Setter Property="Background" Value="#0D1720" />
+    <Setter Property="BorderBrush" Value="#465965" />
+  </Style>
+
+  <Style x:Key="TileActionButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+    <Setter Property="Background" Value="#101B23" />
+    <Setter Property="BorderBrush" Value="#3B4B55" />
+    <Setter Property="FontSize" Value="11" />
+    <Setter Property="Padding" Value="10,0" />
+  </Style>
+
+  <Style x:Key="MeterSegmentButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+    <Setter Property="Background" Value="#081018" />
+    <Setter Property="BorderBrush" Value="#40515D" />
+    <Setter Property="BorderThickness" Value="0" />
+    <Setter Property="FontSize" Value="12" />
+    <Setter Property="Padding" Value="8,0" />
+  </Style>
+
+  <Style x:Key="CaptionButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+    <Setter Property="Width" Value="46" />
+    <Setter Property="Height" Value="40" />
+    <Setter Property="Margin" Value="0" />
+    <Setter Property="Padding" Value="0" />
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="BorderBrush" Value="Transparent" />
+    <Setter Property="BorderThickness" Value="0" />
+    <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
+    <Setter Property="FontSize" Value="10" />
+  </Style>
+
+  <Style x:Key="CloseCaptionButton" TargetType="Button" BasedOn="{StaticResource CaptionButton}">
+    <Style.Triggers>
+      <Trigger Property="IsMouseOver" Value="True">
+        <Setter Property="Background" Value="#C42B1C" />
+      </Trigger>
+    </Style.Triggers>
+  </Style>
+
+  <Style TargetType="ComboBox">
+    <Setter Property="Height" Value="42" />
+    <Setter Property="Padding" Value="10,4" />
+    <Setter Property="Foreground" Value="{StaticResource NextTextPrimaryBrush}" />
+    <Setter Property="Background" Value="#0B151D" />
+    <Setter Property="BorderBrush" Value="{StaticResource NextBorderBrush}" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ComboBox">
+          <Grid>
+            <ToggleButton x:Name="ToggleButton"
+                          Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#0B151D, TargetNullValue=#0B151D}"
+                          BorderBrush="{TemplateBinding BorderBrush}"
+                          BorderThickness="{TemplateBinding BorderThickness}"
+                          ClickMode="Press"
+                          Focusable="False"
+                          Foreground="{TemplateBinding Foreground}"
+                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+              <ToggleButton.Template>
+                <ControlTemplate TargetType="ToggleButton">
+                  <Border x:Name="Chrome"
+                          Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#0B151D, TargetNullValue=#0B151D}"
+                          BorderBrush="{TemplateBinding BorderBrush}"
+                          BorderThickness="{TemplateBinding BorderThickness}"
+                          CornerRadius="3">
+                    <Grid>
+                      <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="32" />
+                      </Grid.ColumnDefinitions>
+                      <ContentPresenter Content="{Binding SelectedItem.Name, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                        HorizontalAlignment="Left"
+                                        IsHitTestVisible="False"
+                                        Margin="12,0,4,0"
+                                        TextElement.Foreground="{StaticResource NextTextPrimaryBrush}"
+                                        VerticalAlignment="Center" />
+                      <Path Grid.Column="1"
+                            Data="M 0 0 L 4 4 L 8 0 Z"
+                            Fill="{StaticResource NextTextMutedBrush}"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center" />
+                    </Grid>
+                  </Border>
+                  <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                      <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource NextAccentBrush}" />
+                    </Trigger>
+                  </ControlTemplate.Triggers>
+                </ControlTemplate>
+              </ToggleButton.Template>
+            </ToggleButton>
+            <Popup AllowsTransparency="True"
+                   Focusable="False"
+                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                   Placement="Bottom"
+                   PopupAnimation="Fade">
+              <Border Background="#0B151D"
+                      BorderBrush="{StaticResource NextBorderBrush}"
+                      BorderThickness="1"
+                      CornerRadius="3"
+                      MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
+                <ScrollViewer MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                  <ItemsPresenter />
+                </ScrollViewer>
+              </Border>
+            </Popup>
+          </Grid>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <Style TargetType="ComboBoxItem">
+    <Setter Property="Foreground" Value="{StaticResource NextTextPrimaryBrush}" />
+    <Setter Property="Background" Value="#0B151D" />
+    <Setter Property="Padding" Value="10,7" />
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="ComboBoxItem">
+          <Border x:Name="Chrome"
+                  Background="{Binding Background, RelativeSource={RelativeSource TemplatedParent}, FallbackValue=#0B151D, TargetNullValue=#0B151D}"
+                  Padding="{TemplateBinding Padding}">
+            <ContentPresenter TextElement.Foreground="{StaticResource NextTextPrimaryBrush}" />
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsHighlighted" Value="True">
+              <Setter TargetName="Chrome" Property="Background" Value="{StaticResource NextSurfaceHoverBrush}" />
+            </Trigger>
+            <Trigger Property="IsSelected" Value="True">
+              <Setter TargetName="Chrome" Property="Background" Value="#12384B" />
+            </Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+</ResourceDictionary>
