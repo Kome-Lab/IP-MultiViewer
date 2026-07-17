@@ -76,12 +76,17 @@ jobs:
             throw "Chocolatey failed to install FFmpeg 8.1.2 (exit code $LASTEXITCODE)."
           }
           $ffmpeg = Get-Command ffmpeg -ErrorAction Stop
-          $protocols = & $ffmpeg.Source -hide_banner -protocols 2>$null
-          if (-not ($protocols | Select-String -Pattern '^\s*srt\s*$' -Quiet)) {
+          Write-Host "FFmpeg path: $($ffmpeg.Source)"
+          & $ffmpeg.Source -hide_banner -version | Select-Object -First 1
+          $protocolText = (& $ffmpeg.Source -hide_banner -protocols 2>&1) -join "`n"
+          if ($LASTEXITCODE -ne 0) {
+            throw "FFmpeg protocol query failed (exit code $LASTEXITCODE)."
+          }
+          Write-Host $protocolText
+          if ($protocolText -notmatch '(?m)^\s*srt\s*$') {
             throw "FFmpeg 8.1.2 does not expose the srt protocol."
           }
           "FFMPEG_BIN=$($ffmpeg.Source)" >> $env:GITHUB_ENV
-          & $ffmpeg.Source -hide_banner -version | Select-Object -First 1
 
       - name: Run composite Windows verification
         shell: pwsh
