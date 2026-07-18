@@ -17,7 +17,7 @@ permissions:
 jobs:
   resolve-version:
     name: Resolve software version from Git tag
-    runs-on: blacksmith-32vcpu-windows-2025
+    runs-on: windows-latest
     outputs:
       git_tag: ${{ steps.meta.outputs.git_tag }}
       commit_sha: ${{ steps.meta.outputs.commit_sha }}
@@ -52,7 +52,7 @@ jobs:
   verify-windows:
     name: Verify Windows build and offline smoke before release
     needs: resolve-version
-    runs-on: blacksmith-32vcpu-windows-2025
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -76,7 +76,7 @@ jobs:
     needs:
       - resolve-version
       - verify-windows
-    runs-on: blacksmith-32vcpu-windows-2025
+    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
@@ -119,7 +119,7 @@ jobs:
     needs:
       - resolve-version
       - release-windows
-    runs-on: blacksmith-32vcpu-windows-2025
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:

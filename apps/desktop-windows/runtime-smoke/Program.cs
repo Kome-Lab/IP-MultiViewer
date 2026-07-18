@@ -853,6 +853,29 @@ internal static class Program
 
     private static void AssertPlaybackStartupSlotsAreEnforced(MainWindow window)
     {
+        var synchronousStarter = Method(
+            typeof(MainWindow),
+            "StartStreamPlayback",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        if (synchronousStarter.ReturnType != typeof(void) ||
+            synchronousStarter.GetCustomAttribute<System.Runtime.CompilerServices.AsyncStateMachineAttribute>() is not null ||
+            typeof(MainWindow).GetMethod(
+                "StartStreamPlaybackAsync",
+                BindingFlags.Instance | BindingFlags.NonPublic) is not null)
+        {
+            throw new InvalidOperationException(
+                "Production playback launch must remain synchronous so the launch gate never awaits a Dispatcher continuation.");
+        }
+
+        var ownerStartAttemptTimeout = (TimeSpan)(typeof(MainWindow)
+            .GetField("PlaybackOwnerStartAttemptTimeout", BindingFlags.Static | BindingFlags.NonPublic)
+            ?.GetValue(null) ?? throw new InvalidOperationException("Playback owner start-attempt timeout field was not found."));
+        if (ownerStartAttemptTimeout != TimeSpan.FromSeconds(1))
+        {
+            throw new InvalidOperationException(
+                $"Playback owner start-attempt CPU admission budget changed unexpectedly: {ownerStartAttemptTimeout}.");
+        }
+
         var startupTimeout = (TimeSpan)(typeof(MainWindow)
             .GetField("PlaybackStartupSlotTimeout", BindingFlags.Static | BindingFlags.NonPublic)
             ?.GetValue(null) ?? throw new InvalidOperationException("Playback startup timeout field was not found."));
@@ -1002,18 +1025,27 @@ internal static class Program
             startButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             PumpUntil(
                 () => createdSessions.Count >= 2,
-                TimeSpan.FromSeconds(1.5),
-                "Two startup slots were not filled by the first two receivers.");
-            Pump(window, 300);
+                ownerStartAttemptTimeout,
+                "The first two playback owners were not launched within the CPU admission window.");
             if (createdSessions.Count != 2 || startupSlots.CurrentCount != 0 || !(bool)startInFlightField.GetValue(window)!)
             {
                 throw new InvalidOperationException(
-                    $"Playback startup exceeded its two-slot limit before admission: created={createdSessions.Count}, available={startupSlots.CurrentCount}.");
+                    $"The first two owner start attempts did not hold the two-slot CPU admission cap: created={createdSessions.Count}, available={startupSlots.CurrentCount}, inFlight={startInFlightField.GetValue(window)}.");
+            }
+
+            PumpUntil(
+                () => createdSessions.Count == testStreams.Length && startupSlots.CurrentCount == 2,
+                (ownerStartAttemptTimeout * 3) + TimeSpan.FromSeconds(1),
+                "Owner start-attempt budgets did not admit all receivers before network readiness.");
+            if (!(bool)startInFlightField.GetValue(window)!)
+            {
+                throw new InvalidOperationException(
+                    "Playback batch completed before the opening owners entered their separate network-readiness waits.");
             }
 
             PumpUntil(
                 () => !(bool)startInFlightField.GetValue(window)!,
-                TimeSpan.FromSeconds(13),
+                startupTimeout + TimeSpan.FromSeconds(3),
                 "Playback startup did not release all slots after the soft admission budgets elapsed.");
             const string expectedSummary = "Starting playback complete: 4 started, 0 skipped, 0 failed.";
             if (createdSessions.Count != 4 ||
@@ -1090,19 +1122,21 @@ internal static class Program
             var cancellationLaunchBaseline = launchTimes.Count;
             startButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             PumpUntil(
-                () => launchTimes.Count >= cancellationLaunchBaseline + 2,
+                () => launchTimes.Count >= cancellationLaunchBaseline + 2 && startupSlots.CurrentCount == 0,
                 TimeSpan.FromSeconds(1.5),
-                "Cancellation smoke did not fill the two startup slots.");
+                "Cancellation smoke did not enter two owner start-attempt polls.");
             if (!stopButton.IsEnabled)
             {
                 throw new InvalidOperationException("Stop remained disabled while receiver startup was in progress.");
             }
 
+            var cancellationDrain = Stopwatch.StartNew();
             stopButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             PumpUntil(
-                () => !(bool)startInFlightField.GetValue(window)!,
-                TimeSpan.FromSeconds(1.5),
-                "Stop did not cancel receivers waiting in the startup coordinator.");
+                () => !(bool)startInFlightField.GetValue(window)! && startupSlots.CurrentCount == 2,
+                ownerStartAttemptTimeout,
+                "Stop did not immediately drain receivers in the owner start-attempt poll.");
+            cancellationDrain.Stop();
             var launchesAfterCancellation = launchTimes.Count;
             Pump(window, 400);
             if (launchTimes.Count != launchesAfterCancellation ||
@@ -1112,12 +1146,15 @@ internal static class Program
                 testStreamIds.Any(restartAttempts.Contains) ||
                 testStreamIds.Any(pendingRestarts.Contains) ||
                 startupSlots.CurrentCount != 2 ||
+                cancellationDrain.Elapsed >= ownerStartAttemptTimeout ||
                 !footer.Text.StartsWith("Playback start cancelled", StringComparison.Ordinal))
             {
-                throw new InvalidOperationException("Stop retained an owner, monitoring intent, retry, pending restart, launch, or startup slot.");
+                throw new InvalidOperationException(
+                    $"Stop retained an owner, monitoring intent, retry, pending restart, launch, or startup slot; drain={cancellationDrain.Elapsed.TotalMilliseconds:0.0}ms.");
             }
 
-            Console.WriteLine("playback_startup_slots_smoke_ok limit=2 streams=4 admission=soft owners=retained terminal=retrying mixed=preserved stop=clean");
+            Console.WriteLine(
+                $"playback_startup_slots_smoke_ok limit=2 streams=4 launch=sync slots=start-attempt-bounded attemptMs={ownerStartAttemptTimeout.TotalMilliseconds:0} admission=soft owners=retained terminal=retrying mixed=preserved stopDrainMs={cancellationDrain.Elapsed.TotalMilliseconds:0.0}");
         }
         finally
         {

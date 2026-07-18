@@ -81,9 +81,9 @@ internal static class Program
                 StringComparison.OrdinalIgnoreCase);
             var ffmpeg = FindFfmpeg();
             var ports = !liveFixtureMayBeSkipped && ffmpeg is not null && FfmpegSupportsProtocol(ffmpeg, "srt")
-                ? FreeUdpPorts(4)
+                ? FreeUdpPorts(8)
                 : [];
-            var liveFixtureEnabled = !liveFixtureMayBeSkipped && ffmpeg is not null && ports.Length == 4;
+            var liveFixtureEnabled = !liveFixtureMayBeSkipped && ffmpeg is not null && ports.Length == 8;
             var includeAlertFixture = !string.Equals(
                 Environment.GetEnvironmentVariable("IPMV_QA_NO_ALERT"),
                 "1",
@@ -126,29 +126,54 @@ internal static class Program
 
             if (liveFixtureEnabled)
             {
+                var passiveListenerPorts = ports.Take(4).ToArray();
+                var bareCallerPorts = ports.Skip(4).Take(4).ToArray();
+                senders.AddRange(StartLiveFixtureSenders(
+                    ffmpeg!,
+                    bareCallerPorts,
+                    fixtureOffset: 4,
+                    srtMode: "listener"));
+                Pump(window, 500);
+                AssertFixtureProcessesRunning(senders, "bare-SRT caller listener sources");
+
                 Named<Button>(window, "StartPlaybackButton")
                     .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                var bareCallerSessions = WaitForDistinctLiveReceivers(
+                    window,
+                    bareCallerPorts
+                        .Select((port, index) => new KeyValuePair<string, int>($"qa-{index + 5:00}", port))
+                        .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase),
+                    timeout: TimeSpan.FromSeconds(12));
                 var waitingListenerSessions = WaitForIdleListenerReceivers(
                     window,
-                    expected: 4,
+                    expectedStreamIds: Enumerable.Range(1, 4).Select(index => $"qa-{index:00}").ToArray(),
                     timeout: TimeSpan.FromSeconds(4));
                 AssertIdleListenerReceiversRemainRegistered(
                     window,
                     waitingListenerSessions,
                     duration: TimeSpan.FromSeconds(6));
-                senders.AddRange(StartLiveFixtureSenders(ffmpeg!, ports, fixtureOffset: 0));
-                WaitForVisibleAudioMeters(window, 4, TimeSpan.FromSeconds(10));
+                AssertFfmpegSessionsPreserved(
+                    window,
+                    bareCallerSessions,
+                    expectedWidth: 640,
+                    expectedHeight: 360);
+                senders.AddRange(StartLiveFixtureSenders(
+                    ffmpeg!,
+                    passiveListenerPorts,
+                    fixtureOffset: 0,
+                    srtMode: "caller"));
+                WaitForVisibleAudioMeters(window, 8, TimeSpan.FromSeconds(12));
                 AssertFfmpegSessionsPreserved(
                     window,
                     waitingListenerSessions,
                     expectedWidth: 640,
                     expectedHeight: 360);
-                AssertPresentedAudioVideoPtsAligned(window, expectedStreams: 4);
-                AssertLiveChannelMetersMove(window, expectedStreams: 4, expectedChannels: 4);
+                AssertPresentedAudioVideoPtsAligned(window, expectedStreams: 8);
+                AssertLiveChannelMetersMove(window, expectedStreams: 8, expectedChannels: 4);
                 AssertVisibleMeterTracksVideoPulse(window, "qa-01");
                 AssertNextMeterUsesVerticalSpace(window);
                 AssertVisibleMeterPanelsFit(window);
-                AssertFfmpegSessionTier(window, expectedWidth: 640, expectedHeight: 360, expectedMinimumCount: 4);
+                AssertFfmpegSessionTier(window, expectedWidth: 640, expectedHeight: 360, expectedMinimumCount: 8);
                 liveSessionBaseline = FfmpegSessionSnapshot(window);
                 AssertRepeatedStartPreservesFfmpegSessions(window, liveSessionBaseline, expectedWidth: 640, expectedHeight: 360);
                 AssertRenderBackendIndicator(window, expectedOutput: "WPF 640x360");
@@ -177,7 +202,13 @@ internal static class Program
             AssertLayout(window, "2x2", 2);
             if (liveSessionBaseline is not null)
             {
-                AssertFfmpegSessionsPreserved(window, liveSessionBaseline, expectedWidth: 640, expectedHeight: 360);
+                var twoByTwoBaseline = Enumerable.Range(1, 4)
+                    .Select(index => $"qa-{index:00}")
+                    .ToDictionary(
+                        streamId => streamId,
+                        streamId => liveSessionBaseline[streamId],
+                        StringComparer.OrdinalIgnoreCase);
+                AssertFfmpegSessionsPreserved(window, twoByTwoBaseline, expectedWidth: 640, expectedHeight: 360);
             }
 
             CaptureAuxiliaryWindows(window, settingsOutputPath, alertHistoryOutputPath);
@@ -435,18 +466,25 @@ internal static class Program
         for (var index = 0; index < 9; index++)
         {
             var enabled = index < ports.Count;
+            var passiveListener = enabled && index < 4;
             var streamId = $"qa-{index + 1:00}";
             config.Streams.Add(new StreamConfig
             {
                 Id = streamId,
-                Name = enabled ? $"Test_SRT_{index + 1}" : $"Spare_{index + 1}",
+                Name = enabled
+                    ? passiveListener
+                        ? $"Test_SRT_Listener_{index + 1}"
+                        : $"Test_SRT_Bare_Caller_{index + 1}"
+                    : $"Spare_{index + 1}",
                 Enabled = enabled,
                 InputUrl = enabled
-                    ? $"srt://127.0.0.1:{ports[index]}?mode=listener&transtype=live"
+                    ? passiveListener
+                        ? $"srt://127.0.0.1:{ports[index]}?mode=listener&transtype=live"
+                        : $"srt://127.0.0.1:{ports[index]}"
                     : "",
                 InputProtocol = "srt",
                 Group = "QA",
-                AnalysisEnabled = false,
+                AnalysisEnabled = enabled && !passiveListener,
                 AudioMonitorEnabled = true
             });
             layout.Tiles.Add(new LayoutTileConfig
@@ -523,7 +561,7 @@ internal static class Program
 
     private static Dictionary<string, object> WaitForIdleListenerReceivers(
         MainWindow window,
-        int expected,
+        IReadOnlyCollection<string> expectedStreamIds,
         TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
@@ -535,12 +573,12 @@ internal static class Program
             Pump(window, 100);
             var sessions = (IDictionary)PrivateField(window, "_ffmpegPlaybackSessions");
             var startupSlots = (SemaphoreSlim)PrivateField(window, "_playbackStartupSlots");
-            registered = sessions.Count;
+            registered = expectedStreamIds.Count(sessions.Contains);
             availableStartupSlots = startupSlots.CurrentCount;
             startInFlight = (bool)PrivateField(window, "_playbackStartInFlight");
-            if (registered == expected && availableStartupSlots == 2 && !startInFlight)
+            if (registered == expectedStreamIds.Count && availableStartupSlots == 2 && !startInFlight)
             {
-                var snapshot = FfmpegSessionSnapshot(window);
+                var snapshot = FfmpegSessionSnapshot(window, expectedStreamIds);
                 AssertIdleListenerSessionSet(window, snapshot);
                 Console.WriteLine(
                     $"listener_receivers_ready_without_senders_ok registered={registered} available_startup_slots={availableStartupSlots}");
@@ -549,8 +587,104 @@ internal static class Program
         }
 
         throw new InvalidOperationException(
-            $"Timed out waiting for {expected} senderless SRT listeners to register and release both startup slots: " +
+            $"Timed out waiting for {expectedStreamIds.Count} senderless SRT listeners to register and release both startup slots: " +
             $"registered={registered}, available_startup_slots={availableStartupSlots}, start_in_flight={startInFlight}.");
+    }
+
+    private static Dictionary<string, object> WaitForDistinctLiveReceivers(
+        MainWindow window,
+        IReadOnlyDictionary<string, int> expectedPortsByStream,
+        TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        var lastStatus = "no sessions registered";
+        while (DateTime.UtcNow < deadline)
+        {
+            Pump(window, 100);
+            var sessions = (IDictionary)PrivateField(window, "_ffmpegPlaybackSessions");
+            var missing = expectedPortsByStream.Keys.Where(streamId => !sessions.Contains(streamId)).ToArray();
+            if (missing.Length > 0)
+            {
+                lastStatus = $"missing={string.Join(',', missing)} registered={sessions.Count}";
+                continue;
+            }
+
+            var snapshot = FfmpegSessionSnapshot(window, expectedPortsByStream.Keys);
+            var owners = snapshot.Values.ToArray();
+            if (owners.Distinct(ReferenceEqualityComparer.Instance).Count() != owners.Length)
+            {
+                lastStatus = "multiple stream IDs shared one playback owner";
+                continue;
+            }
+
+            var processIds = new HashSet<int>();
+            var allReady = true;
+            foreach (var (streamId, expectedPort) in expectedPortsByStream)
+            {
+                var owner = snapshot[streamId];
+                var type = owner.GetType();
+                var inputUrl = Convert.ToString(type.GetField("_inputUrl", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(owner));
+                var process = type.GetField("_process", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(owner) as Process;
+                var state = Convert.ToString(type.GetProperty("State")!.GetValue(owner)) ?? "unknown";
+                var hasFrame = (bool)type.GetProperty("HasFrame")!.GetValue(owner)!;
+                var hasPresentedFrame = (bool)type.GetProperty("HasPresentedFrame")!.GetValue(owner)!;
+                var expectedInputUrl = $"srt://127.0.0.1:{expectedPort}";
+                var processRunning = false;
+                try
+                {
+                    processRunning = process is not null && !process.HasExited;
+                }
+                catch
+                {
+                    processRunning = false;
+                }
+
+                if (!string.Equals(inputUrl, expectedInputUrl, StringComparison.OrdinalIgnoreCase) ||
+                    !processRunning ||
+                    !processIds.Add(process!.Id) ||
+                    !string.Equals(state, "playing", StringComparison.OrdinalIgnoreCase) ||
+                    !hasFrame ||
+                    !hasPresentedFrame)
+                {
+                    lastStatus = $"{streamId}: input={inputUrl}, expected={expectedInputUrl}, state={state}, " +
+                        $"frame={hasFrame}, presented={hasPresentedFrame}, process_running={processRunning}";
+                    allReady = false;
+                    break;
+                }
+            }
+
+            var startupSlots = (SemaphoreSlim)PrivateField(window, "_playbackStartupSlots");
+            var startInFlight = (bool)PrivateField(window, "_playbackStartInFlight");
+            if (allReady && processIds.Count == expectedPortsByStream.Count &&
+                startupSlots.CurrentCount == 2 && !startInFlight)
+            {
+                Console.WriteLine(
+                    $"bare_srt_hot_inputs_ok streams={snapshot.Count} owners={owners.Length} processes={processIds.Count} " +
+                    $"ports={expectedPortsByStream.Values.Distinct().Count()} startup_slots={startupSlots.CurrentCount}");
+                return snapshot;
+            }
+
+            if (allReady)
+            {
+                lastStatus = $"receivers ready but coordinator remained busy: startup_slots={startupSlots.CurrentCount}, start_in_flight={startInFlight}";
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"Four hot bare-SRT caller inputs did not acquire independent receiver owners and release the launch coordinator: {lastStatus}.");
+    }
+
+    private static void AssertFixtureProcessesRunning(IReadOnlyCollection<Process> processes, string fixture)
+    {
+        var runningIds = new HashSet<int>();
+        foreach (var process in processes)
+        {
+            if (process.HasExited || !runningIds.Add(process.Id))
+            {
+                throw new InvalidOperationException(
+                    $"{fixture} did not start as distinct live FFmpeg processes: running={runningIds.Count}, expected={processes.Count}.");
+            }
+        }
     }
 
     private static void AssertIdleListenerReceiversRemainRegistered(
@@ -580,12 +714,6 @@ internal static class Program
         IReadOnlyDictionary<string, object> baseline)
     {
         var sessions = (IDictionary)PrivateField(window, "_ffmpegPlaybackSessions");
-        if (sessions.Count != baseline.Count)
-        {
-            throw new InvalidOperationException(
-                $"Senderless SRT listener count changed while waiting: {baseline.Count} -> {sessions.Count}.");
-        }
-
         foreach (var (streamId, original) in baseline)
         {
             if (!sessions.Contains(streamId) || !ReferenceEquals(sessions[streamId], original))
@@ -1328,6 +1456,17 @@ internal static class Program
                 StringComparer.OrdinalIgnoreCase);
     }
 
+    private static Dictionary<string, object> FfmpegSessionSnapshot(
+        MainWindow window,
+        IEnumerable<string> streamIds)
+    {
+        var sessions = (IDictionary)PrivateField(window, "_ffmpegPlaybackSessions");
+        return streamIds.ToDictionary(
+            streamId => streamId,
+            streamId => sessions[streamId] ?? throw new InvalidOperationException($"FFmpeg session {streamId} was null."),
+            StringComparer.OrdinalIgnoreCase);
+    }
+
     private static void AssertRepeatedStartPreservesFfmpegSessions(
         MainWindow window,
         IReadOnlyDictionary<string, object> baseline,
@@ -1719,7 +1858,8 @@ internal static class Program
     private static IReadOnlyList<Process> StartLiveFixtureSenders(
         string ffmpeg,
         IReadOnlyList<int> ports,
-        int fixtureOffset)
+        int fixtureOffset,
+        string srtMode)
     {
         var sources = new[]
         {
@@ -1740,11 +1880,11 @@ internal static class Program
                 "-hide_banner", "-loglevel", "error", "-re",
                 "-f", "lavfi", "-i", sources[index % sources.Length],
                 "-f", "lavfi", "-i", audio,
-                "-t", "45",
+                "-t", "150",
                 "-c:v", "mpeg4", "-q:v", "6",
                 "-c:a", "aac", "-b:a", "192k",
                 "-f", "mpegts",
-                $"srt://127.0.0.1:{ports[localIndex]}?mode=caller&pkt_size=1316"));
+                $"srt://127.0.0.1:{ports[localIndex]}?mode={srtMode}&pkt_size=1316"));
         }
 
         return senders;

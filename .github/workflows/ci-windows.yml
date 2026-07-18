@@ -13,7 +13,7 @@ permissions:
 jobs:
   verify-windows:
     name: Current desktop, offline smoke, and publish
-    runs-on: blacksmith-8vcpu-windows-2025
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 

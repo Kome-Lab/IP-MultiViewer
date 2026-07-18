@@ -134,6 +134,7 @@ public partial class MainWindow : Window
     private const double EmbeddedVideoMeterReservePx = 84;
     private const int LivePlaybackCacheMs = 100;
     private static readonly TimeSpan PlaybackBatchStartSpacing = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan PlaybackOwnerStartAttemptTimeout = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan PlaybackStartupSlotTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan PlaybackStartupPollInterval = TimeSpan.FromMilliseconds(100);
     private const string GpuRenderingEnvironmentVariable = "IPMV_GPU_RENDERING";
@@ -1842,6 +1843,7 @@ public partial class MainWindow : Window
         bool allowDuringBatch = false)
     {
         await _playbackStartupSlots.WaitAsync();
+        var startupSlotHeld = true;
         object? startedOwner = null;
         try
         {
@@ -1885,7 +1887,7 @@ public partial class MainWindow : Window
                     }
                     else
                     {
-                        await StartStreamPlaybackAsync(stream);
+                        StartStreamPlayback(stream);
                     }
                     startedOwner = PlaybackOwnerFor(streamId);
                 }
@@ -1903,6 +1905,15 @@ public partial class MainWindow : Window
             {
                 return false;
             }
+
+            // Bound concurrent process/player creation, but never hold a slot while
+            // an external source is connecting or waiting to send its first frame.
+            await WaitForPlaybackOwnerStartAttemptAsync(
+                streamId,
+                startedOwner,
+                expectedOperationGeneration);
+            _playbackStartupSlots.Release();
+            startupSlotHeld = false;
 
             var startupOutcome = await WaitForPlaybackStartupOutcomeAsync(
                 streamId,
@@ -1949,7 +1960,46 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _playbackStartupSlots.Release();
+            if (startupSlotHeld)
+            {
+                _playbackStartupSlots.Release();
+            }
+        }
+    }
+
+    private async System.Threading.Tasks.Task WaitForPlaybackOwnerStartAttemptAsync(
+        string streamId,
+        object expectedOwner,
+        long? expectedOperationGeneration)
+    {
+        var deadline = DateTimeOffset.UtcNow.Add(PlaybackOwnerStartAttemptTimeout);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if ((expectedOperationGeneration is long generation && !IsPlaybackOperationCurrent(generation)) ||
+                !ReferenceEquals(PlaybackOwnerFor(streamId), expectedOwner) ||
+                PlaybackOwnerStartAttempted(expectedOwner))
+            {
+                return;
+            }
+
+            await System.Threading.Tasks.Task.Delay(PlaybackStartupPollInterval);
+        }
+    }
+
+    private static bool PlaybackOwnerStartAttempted(object owner)
+    {
+        try
+        {
+            return owner switch
+            {
+                FfmpegPlaybackSession session => session.IsProcessRunning || IsPlaybackStartupFailed(session.State),
+                VlcMediaPlayer player => player.State != VLCState.NothingSpecial,
+                _ => true
+            };
+        }
+        catch (ObjectDisposedException)
+        {
+            return true;
         }
     }
 
@@ -2022,7 +2072,7 @@ public partial class MainWindow : Window
                 string.Equals(candidate.Id, streamId, StringComparison.OrdinalIgnoreCase));
             if (stream is not null && IsPlaybackStartupArmed(stream, expectedOwner, state))
             {
-                AppendDesktopLog($"Playback receiver for {streamId} is armed and waiting for input; released its startup slot.");
+                AppendDesktopLog($"Playback receiver for {streamId} is armed and waiting for input.");
                 return PlaybackStartupOutcome.Armed;
             }
 
@@ -2038,7 +2088,7 @@ public partial class MainWindow : Window
         if (ReferenceEquals(finalOwner, expectedOwner))
         {
             AppendDesktopLog(
-                $"Playback startup admission window elapsed for {streamId}; retained the connection attempt and released its startup slot.");
+                $"Playback startup observation window elapsed for {streamId}; retained the connection attempt.");
             return PlaybackStartupOutcome.Pending;
         }
 
@@ -2975,12 +3025,11 @@ public partial class MainWindow : Window
             string.Equals(tile.StreamId, streamId, StringComparison.OrdinalIgnoreCase)) == true;
     }
 
-    private async System.Threading.Tasks.Task StartStreamPlaybackAsync(StreamConfig stream)
+    private void StartStreamPlayback(StreamConfig stream)
     {
         if (ShouldUseFfmpegPlayback(stream))
         {
             StartFfmpegStreamPlayback(stream);
-            await Dispatcher.Yield(DispatcherPriority.Background);
             return;
         }
 
@@ -2996,8 +3045,6 @@ public partial class MainWindow : Window
         {
             QueueVideoMonitorStart(stream);
         }
-
-        await Dispatcher.Yield(DispatcherPriority.Background);
     }
 
     private bool ShouldUseFfmpegPlayback(StreamConfig stream)
@@ -3626,6 +3673,7 @@ public partial class MainWindow : Window
         }
 
         await _playbackStartupSlots.WaitAsync();
+        var startupSlotHeld = true;
         IVideoAnalysisMonitor? startedMonitor = null;
         try
         {
@@ -3668,6 +3716,11 @@ public partial class MainWindow : Window
                 _playbackLaunchGate.Release();
             }
 
+            // Sidecar readiness is an external media concern. Once its process is
+            // registered, let the remaining playback and analysis owners launch.
+            _playbackStartupSlots.Release();
+            startupSlotHeld = false;
+
             var deadline = DateTimeOffset.UtcNow.Add(PlaybackStartupSlotTimeout);
             var terminal = false;
             while (DateTimeOffset.UtcNow < deadline)
@@ -3703,7 +3756,7 @@ public partial class MainWindow : Window
                 ReferenceEquals(timedOutMonitor, startedMonitor))
             {
                 StopVideoMonitor(streamId);
-                AppendDesktopLog($"GPU sidecar analysis startup failed for {streamId}; stopped the terminal monitor before releasing its connection slot.");
+                AppendDesktopLog($"GPU sidecar analysis startup failed for {streamId}; stopped the terminal monitor.");
                 return false;
             }
 
@@ -3715,7 +3768,7 @@ public partial class MainWindow : Window
                 if (stream is not null && IsPassiveReceiverInput(stream.InputUrl, stream.InputProtocol))
                 {
                     AppendDesktopLog(
-                        $"GPU sidecar analysis receiver for {streamId} remains armed for passive input; released its startup slot.");
+                        $"GPU sidecar analysis receiver for {streamId} remains armed for passive input.");
                     return true;
                 }
 
@@ -3728,7 +3781,10 @@ public partial class MainWindow : Window
         }
         finally
         {
-            _playbackStartupSlots.Release();
+            if (startupSlotHeld)
+            {
+                _playbackStartupSlots.Release();
+            }
         }
     }
 
