@@ -81,6 +81,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, DateTimeOffset> _playbackRestartAfter = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _playbackRestartAttempts = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _pendingPlaybackRestarts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _monitoringRequestedStreamIds = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _playbackStartupSlots = new(2, 2);
     private readonly SemaphoreSlim _playbackLaunchGate = new(1, 1);
     private Func<StreamConfig, System.Threading.Tasks.Task>? _playbackStarterOverride = null;
@@ -152,6 +153,16 @@ public partial class MainWindow : Window
     private const string AlertMessageAudioChannelMissing = "\u97f3\u58f0\u30c8\u30e9\u30c3\u30af\u3092\u691c\u51fa\u3067\u304d\u307e\u305b\u3093";
     private const string AlertMessageAudioSilence = "\u7121\u97f3\u3092\u691c\u77e5\u3057\u307e\u3057\u305f";
     private const string AlertMessageAudioClipping = "\u97f3\u58f0\u30af\u30ea\u30c3\u30d4\u30f3\u30b0\u3092\u691c\u77e5\u3057\u307e\u3057\u305f";
+
+    private enum PlaybackStartupOutcome
+    {
+        Ready,
+        Armed,
+        Pending,
+        Terminal,
+        Superseded,
+        Cancelled
+    }
 
     private ListBox StreamsList => _settingsWindow.StreamsList;
     private ComboBox LayoutCombo => _settingsWindow.LayoutCombo;
@@ -1678,7 +1689,7 @@ public partial class MainWindow : Window
         }
 
         var streamIds = ActiveLayoutStreams()
-            .Where(stream => stream.Enabled)
+            .Where(stream => stream.Enabled && CanPlayStream(stream))
             .Select(stream => stream.Id)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -1687,6 +1698,11 @@ public partial class MainWindow : Window
         var failed = 0;
         string? lastError = null;
         var operationGeneration = _playbackOperationGeneration;
+
+        foreach (var streamId in streamIds)
+        {
+            _monitoringRequestedStreamIds.Add(streamId);
+        }
 
         _playbackStartInFlight = true;
         StartPlaybackButton.IsEnabled = false;
@@ -1740,6 +1756,21 @@ public partial class MainWindow : Window
                 {
                     lastError = ex.Message;
                     failed++;
+                    if (_monitoringRequestedStreamIds.Contains(streamId))
+                    {
+                        if (IsPlaybackLoaded(streamId))
+                        {
+                            StopStreamPlayback(streamId, resetRestartBackoff: false);
+                        }
+                        _playbackSnapshots[streamId] = EmptyPlaybackSnapshot("error");
+                        MarkPlaybackRestartAfterFailure(streamId);
+                        var stream = CurrentActivePlayableStream(streamId);
+                        if (stream is not null)
+                        {
+                            RefreshPlaybackSurface(stream);
+                            UpdateTileChrome(stream);
+                        }
+                    }
                     AppendDesktopLog($"Start playback failed for {streamId}: {ex}");
                 }
             }
@@ -1873,28 +1904,47 @@ public partial class MainWindow : Window
                 return false;
             }
 
-            if (!await WaitForPlaybackStartupOutcomeAsync(streamId, startedOwner, expectedOperationGeneration))
+            var startupOutcome = await WaitForPlaybackStartupOutcomeAsync(
+                streamId,
+                startedOwner,
+                expectedOperationGeneration);
+            if (startupOutcome == PlaybackStartupOutcome.Cancelled)
             {
-                if (expectedOperationGeneration is long generation && !IsPlaybackOperationCurrent(generation))
-                {
-                    if (ReferenceEquals(PlaybackOwnerFor(streamId), startedOwner))
-                    {
-                        StopStreamPlayback(streamId, resetRestartBackoff: false);
-                    }
-
-                    return false;
-                }
-
                 if (ReferenceEquals(PlaybackOwnerFor(streamId), startedOwner))
                 {
                     StopStreamPlayback(streamId, resetRestartBackoff: false);
-                    _playbackSnapshots[streamId] = EmptyPlaybackSnapshot("error");
-                    MarkPlaybackRestartAfterFailure(streamId);
                 }
 
-                throw new TimeoutException(
-                    $"Playback startup for {streamId} did not receive input within {PlaybackStartupSlotTimeout.TotalSeconds:0} seconds.");
+                return false;
             }
+
+            if (startupOutcome == PlaybackStartupOutcome.Terminal)
+            {
+                var terminalState = PlaybackOwnerState(startedOwner);
+                if (ReferenceEquals(PlaybackOwnerFor(streamId), startedOwner))
+                {
+                    StopStreamPlayback(streamId, resetRestartBackoff: false);
+                    if (_monitoringRequestedStreamIds.Contains(streamId))
+                    {
+                        _playbackSnapshots[streamId] = EmptyPlaybackSnapshot(
+                            string.Equals(terminalState, "error", StringComparison.OrdinalIgnoreCase)
+                                ? "error"
+                                : "retrying");
+                        MarkPlaybackRestartAfterFailure(streamId);
+                        var stream = CurrentActivePlayableStream(streamId);
+                        if (stream is not null)
+                        {
+                            RefreshPlaybackSurface(stream);
+                            UpdateTileChrome(stream);
+                        }
+                    }
+                }
+
+                AppendDesktopLog(
+                    $"Playback startup for {streamId} entered terminal state '{terminalState}'; monitoring remains enabled and a retry was scheduled.");
+                return _monitoringRequestedStreamIds.Contains(streamId);
+            }
+
             return true;
         }
         finally
@@ -1912,6 +1962,7 @@ public partial class MainWindow : Window
         bool allowDuringBatch)
     {
         if ((expectedOperationGeneration is long generation && !IsPlaybackOperationCurrent(generation)) ||
+            !_monitoringRequestedStreamIds.Contains(streamId) ||
             (!allowDuringBatch && _playbackStartInFlight))
         {
             return null;
@@ -1929,7 +1980,7 @@ public partial class MainWindow : Window
         return stream;
     }
 
-    private async System.Threading.Tasks.Task<bool> WaitForPlaybackStartupOutcomeAsync(
+    private async System.Threading.Tasks.Task<PlaybackStartupOutcome> WaitForPlaybackStartupOutcomeAsync(
         string streamId,
         object expectedOwner,
         long? expectedOperationGeneration)
@@ -1939,13 +1990,15 @@ public partial class MainWindow : Window
         {
             if (expectedOperationGeneration is long generation && !IsPlaybackOperationCurrent(generation))
             {
-                return false;
+                return PlaybackStartupOutcome.Cancelled;
             }
 
             var currentOwner = PlaybackOwnerFor(streamId);
             if (!ReferenceEquals(currentOwner, expectedOwner))
             {
-                return currentOwner is not null;
+                return currentOwner is not null
+                    ? PlaybackStartupOutcome.Superseded
+                    : PlaybackStartupOutcome.Cancelled;
             }
 
             var (state, hasReceivedFrame) = expectedOwner switch
@@ -1957,12 +2010,20 @@ public partial class MainWindow : Window
             if (IsPlaybackStartupFailed(state))
             {
                 AppendDesktopLog($"Playback startup for {streamId} entered terminal state '{state}' before input became ready.");
-                return false;
+                return PlaybackStartupOutcome.Terminal;
             }
 
             if (IsPlaybackStartupReady(state, hasReceivedFrame))
             {
-                return true;
+                return PlaybackStartupOutcome.Ready;
+            }
+
+            var stream = _config.Streams.FirstOrDefault(candidate =>
+                string.Equals(candidate.Id, streamId, StringComparison.OrdinalIgnoreCase));
+            if (stream is not null && IsPlaybackStartupArmed(stream, expectedOwner, state))
+            {
+                AppendDesktopLog($"Playback receiver for {streamId} is armed and waiting for input; released its startup slot.");
+                return PlaybackStartupOutcome.Armed;
             }
 
             await System.Threading.Tasks.Task.Delay(PlaybackStartupPollInterval);
@@ -1970,17 +2031,63 @@ public partial class MainWindow : Window
 
         if (expectedOperationGeneration is long finalGeneration && !IsPlaybackOperationCurrent(finalGeneration))
         {
-            return false;
+            return PlaybackStartupOutcome.Cancelled;
         }
 
         var finalOwner = PlaybackOwnerFor(streamId);
         if (ReferenceEquals(finalOwner, expectedOwner))
         {
-            AppendDesktopLog($"Playback startup timed out for {streamId}; stopping the connection attempt before starting the next queued receiver.");
+            AppendDesktopLog(
+                $"Playback startup admission window elapsed for {streamId}; retained the connection attempt and released its startup slot.");
+            return PlaybackStartupOutcome.Pending;
+        }
+
+        return finalOwner is not null
+            ? PlaybackStartupOutcome.Superseded
+            : PlaybackStartupOutcome.Cancelled;
+    }
+
+    private static string PlaybackOwnerState(object owner)
+    {
+        return owner switch
+        {
+            FfmpegPlaybackSession session => session.State,
+            VlcMediaPlayer player => player.State.ToString().ToLowerInvariant(),
+            _ => "unknown"
+        };
+    }
+
+    private static bool IsPlaybackStartupArmed(StreamConfig stream, object owner, string state)
+    {
+        if (!IsPassiveReceiverInput(stream.InputUrl, stream.InputProtocol) || IsPlaybackStartupFailed(state))
+        {
             return false;
         }
 
-        return finalOwner is not null;
+        return owner switch
+        {
+            FfmpegPlaybackSession session => session.IsProcessRunning,
+            VlcMediaPlayer => state.Equals("opening", StringComparison.OrdinalIgnoreCase) ||
+                state.Equals("buffering", StringComparison.OrdinalIgnoreCase) ||
+                state.Equals("playing", StringComparison.OrdinalIgnoreCase),
+            _ => false
+        };
+    }
+
+    internal static bool IsPassiveReceiverInput(string inputUrl, string protocol)
+    {
+        var normalizedProtocol = (protocol ?? "").Trim().ToLowerInvariant();
+        var scheme = Uri.TryCreate(inputUrl, UriKind.Absolute, out var uri)
+            ? uri.Scheme.ToLowerInvariant()
+            : "";
+        if (scheme == "srt" || normalizedProtocol.StartsWith("srt", StringComparison.Ordinal))
+        {
+            var srtMode = FfmpegPlaybackSession.EffectiveSrtMode(inputUrl, normalizedProtocol);
+            return srtMode is "listener" or "rendezvous";
+        }
+
+        return scheme is "udp" or "rtp" ||
+            normalizedProtocol is "udp" or "udp-listener" or "rtp" or "rtp-listener";
     }
 
     internal static bool IsPlaybackStartupReady(string state, bool hasReceivedFrame)
@@ -1994,8 +2101,11 @@ public partial class MainWindow : Window
     private void StopPlaybackButton_Click(object sender, RoutedEventArgs e)
     {
         var startWasInFlight = _playbackStartInFlight;
-        var stopped = _players.Count;
-        stopped += _ffmpegPlaybackSessions.Count;
+        var stopped = _players.Keys
+            .Concat(_ffmpegPlaybackSessions.Keys)
+            .Concat(_monitoringRequestedStreamIds)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
         StopAllPlayback();
         RefreshPlaybackSurfaces();
         UpdateAllTileChrome();
@@ -2435,6 +2545,7 @@ public partial class MainWindow : Window
         EnsurePlaybackSurfaceChildren(surface, stream);
         var hasPlayer = _players.TryGetValue(stream.Id, out var player);
         var hasFfmpegSession = _ffmpegPlaybackSessions.TryGetValue(stream.Id, out var ffmpegSession);
+        var monitoringRequested = _monitoringRequestedStreamIds.Contains(stream.Id);
         var snapshotAvailable = _playbackSnapshots.TryGetValue(stream.Id, out var snapshot);
         var clearPlaybackSurface = snapshotAvailable && ShouldClearPlaybackSurface(stream, snapshot!);
         var keepVlcVideoAttached = hasPlayer && !clearPlaybackSurface;
@@ -2457,7 +2568,8 @@ public partial class MainWindow : Window
             showVlcVideo ? "has-vlc-presented-video" : "no-vlc-presented-video",
             showVlcVideo ? "show-vlc" : "hide-vlc",
             showFfmpegVideo ? "show-ffmpeg" : "hide-ffmpeg",
-            hasFfmpegSession && ffmpegSession!.HasPresentedFrame ? "has-presented-frame" : "no-presented-frame");
+            hasFfmpegSession && ffmpegSession!.HasPresentedFrame ? "has-presented-frame" : "no-presented-frame",
+            monitoringRequested ? "monitoring-requested" : "monitoring-stopped");
         if (_tileSurfaceRenderKeys.TryGetValue(stream.Id, out var previousSurfaceKey) &&
             string.Equals(previousSurfaceKey, surfaceKey, StringComparison.Ordinal))
         {
@@ -2494,7 +2606,11 @@ public partial class MainWindow : Window
             var loaded = hasPlayer || hasFfmpegSession;
             var placeholderText = clearPlaybackSurface
                 ? "No signal"
-                : loaded ? "Playback starting" : "Playback stopped";
+                : loaded
+                    ? "Playback starting"
+                    : monitoringRequested
+                        ? "Monitoring / retrying"
+                        : "Playback stopped";
             SetTextIfChanged(placeholder, placeholderText);
             placeholder.Visibility = showVlcVideo || showFfmpegVideo ? Visibility.Collapsed : Visibility.Visible;
         }
@@ -3107,7 +3223,8 @@ public partial class MainWindow : Window
     {
         _players.Remove(stream.Id);
         _audioMonitors.Remove(stream.Id);
-        _playbackSnapshots[stream.Id] = EmptyPlaybackSnapshot("stopped");
+        _playbackSnapshots[stream.Id] = EmptyPlaybackSnapshot(
+            _monitoringRequestedStreamIds.Contains(stream.Id) ? "retrying" : "stopped");
         MarkPlaybackRestartAfterFailure(stream.Id);
         RefreshPlaybackSurface(stream);
         UpdateTileChrome(stream);
@@ -3121,6 +3238,7 @@ public partial class MainWindow : Window
         if (resetRestartBackoff)
         {
             _playbackRestartAttempts.Remove(streamId);
+            _monitoringRequestedStreamIds.Remove(streamId);
         }
         _tileSurfaceRenderKeys.Remove(streamId);
         if (_ffmpegPlaybackSessions.Remove(streamId, out var ffmpegSession))
@@ -3169,6 +3287,7 @@ public partial class MainWindow : Window
     private void StopAllPlayback()
     {
         CancelPendingPlaybackOperations();
+        _monitoringRequestedStreamIds.Clear();
         _playbackRestartAfter.Clear();
         _playbackRestartAttempts.Clear();
         var streamIds = new HashSet<string>(_players.Keys, StringComparer.OrdinalIgnoreCase);
@@ -3199,6 +3318,7 @@ public partial class MainWindow : Window
         activeStreamIds ??= ActiveMonitoredStreamIdSet();
         var loadedStreamIds = _players.Keys
             .Concat(_ffmpegPlaybackSessions.Keys)
+            .Concat(_monitoringRequestedStreamIds)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Where(streamId => !activeStreamIds.Contains(streamId))
             .ToList();
@@ -3455,15 +3575,9 @@ public partial class MainWindow : Window
         VlcMediaPlayer expectedPlayer,
         long operationGeneration)
     {
-        var deadline = DateTimeOffset.UtcNow.Add(PlaybackStartupSlotTimeout);
-        while (DateTimeOffset.UtcNow < deadline)
+        while (IsPlaybackOperationCurrent(operationGeneration) &&
+            ReferenceEquals(PlaybackOwnerFor(streamId), expectedPlayer))
         {
-            if (!IsPlaybackOperationCurrent(operationGeneration) ||
-                !ReferenceEquals(PlaybackOwnerFor(streamId), expectedPlayer))
-            {
-                return false;
-            }
-
             var state = expectedPlayer.State.ToString();
             if (string.Equals(state, "playing", StringComparison.OrdinalIgnoreCase))
             {
@@ -3555,6 +3669,7 @@ public partial class MainWindow : Window
             }
 
             var deadline = DateTimeOffset.UtcNow.Add(PlaybackStartupSlotTimeout);
+            var terminal = false;
             while (DateTimeOffset.UtcNow < deadline)
             {
                 if (!IsPlaybackOperationCurrent(operationGeneration))
@@ -3571,6 +3686,7 @@ public partial class MainWindow : Window
                 if (IsRecoverablePlaybackState(startedMonitor.State))
                 {
                     AppendDesktopLog($"GPU sidecar analysis startup for {streamId} entered terminal state '{startedMonitor.State}'.");
+                    terminal = true;
                     break;
                 }
 
@@ -3582,11 +3698,30 @@ public partial class MainWindow : Window
                 await System.Threading.Tasks.Task.Delay(PlaybackStartupPollInterval);
             }
 
-            if (_videoMonitors.TryGetValue(streamId, out var timedOutMonitor) &&
+            if (terminal &&
+                _videoMonitors.TryGetValue(streamId, out var timedOutMonitor) &&
                 ReferenceEquals(timedOutMonitor, startedMonitor))
             {
                 StopVideoMonitor(streamId);
-                AppendDesktopLog($"GPU sidecar analysis startup timed out for {streamId}; stopped before releasing its connection slot.");
+                AppendDesktopLog($"GPU sidecar analysis startup failed for {streamId}; stopped the terminal monitor before releasing its connection slot.");
+                return false;
+            }
+
+            if (_videoMonitors.TryGetValue(streamId, out var pendingMonitor) &&
+                ReferenceEquals(pendingMonitor, startedMonitor) &&
+                IsPlaybackOperationCurrent(operationGeneration))
+            {
+                var stream = CurrentActivePlayableStream(streamId);
+                if (stream is not null && IsPassiveReceiverInput(stream.InputUrl, stream.InputProtocol))
+                {
+                    AppendDesktopLog(
+                        $"GPU sidecar analysis receiver for {streamId} remains armed for passive input; released its startup slot.");
+                    return true;
+                }
+
+                StopVideoMonitor(streamId);
+                AppendDesktopLog(
+                    $"GPU sidecar analysis startup timed out for {streamId}; stopped the active connection attempt so periodic recovery can retry it.");
             }
 
             return false;
@@ -3830,9 +3965,13 @@ public partial class MainWindow : Window
         var videoFreshness = maxVideoAgeMs >= 0
             ? $" / video age max {maxVideoAgeMs:0}ms"
             : "";
-        var loaded = _players.Count + _ffmpegPlaybackSessions.Count;
-        SetTextIfChanged(PlaybackSummaryText, $"{active}/{loaded} active · {errors} err");
-        PlaybackSummaryText.ToolTip = $"{active} active / {loaded} loaded / {layoutStreams.Count} layout streams / {errors} errors{videoFreshness}";
+        var monitored = _players.Keys
+            .Concat(_ffmpegPlaybackSessions.Keys)
+            .Concat(_monitoringRequestedStreamIds)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        SetTextIfChanged(PlaybackSummaryText, $"{active}/{monitored} active · {errors} err");
+        PlaybackSummaryText.ToolTip = $"{active} active / {monitored} monitoring / {layoutStreams.Count} layout streams / {errors} errors{videoFreshness}";
         UpdateNextRenderBackendStatus();
     }
 
@@ -4201,7 +4340,9 @@ public partial class MainWindow : Window
 
         if (alert is null && !isLoaded)
         {
-            return "#6b7280";
+            return stream is not null && _monitoringRequestedStreamIds.Contains(stream.Id)
+                ? "#f59e0b"
+                : "#6b7280";
         }
 
         if (alert is null && snapshot is not null && !string.Equals(snapshot.State, "playing", StringComparison.OrdinalIgnoreCase))
@@ -4279,7 +4420,9 @@ public partial class MainWindow : Window
 
         if (!isLoaded)
         {
-            return "standby / playback stopped";
+            return _monitoringRequestedStreamIds.Contains(stream.Id)
+                ? "monitoring / retrying"
+                : "standby / playback stopped";
         }
 
         if (snapshot is null)
@@ -4432,7 +4575,11 @@ public partial class MainWindow : Window
             return $"playback: {snapshot.State} / fps: {fps} / time: {time}/{length} / audio: {audio} / tracks: {audioTracks} / level: {audioLevel} / luma: {luma}{videoOutput}";
         }
 
-        return IsPlaybackLoaded(stream.Id) ? "playback: starting" : "playback: stopped";
+        return IsPlaybackLoaded(stream.Id)
+            ? "playback: starting"
+            : _monitoringRequestedStreamIds.Contains(stream.Id)
+                ? "playback: retrying"
+                : "playback: stopped";
     }
 
     private void RefreshPlaybackMetadata()
@@ -4581,7 +4728,9 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            if (!stream.Enabled || !stream.AnalysisEnabled || !IsPlaybackLoaded(stream.Id))
+            if (!stream.Enabled ||
+                !stream.AnalysisEnabled ||
+                (!IsPlaybackLoaded(stream.Id) && !_monitoringRequestedStreamIds.Contains(stream.Id)))
             {
                 ClearPendingImmediateBlackFrameDetection(stream.Id);
                 continue;
@@ -5052,7 +5201,7 @@ public partial class MainWindow : Window
             var heartbeat = new ServerClientHeartbeat(
                 _config.ClientId,
                 _config.ActiveLayoutId,
-            IsAnyPlaybackLoaded() ? "monitoring" : "idle",
+                IsAnyPlaybackLoaded() ? "monitoring" : "idle",
                 _config.AlertHistory.Count(alert => ActiveAlertStatuses.Contains(alert.Status)),
                 DateTimeOffset.UtcNow);
             await PostJsonAsync($"{baseUrl}/clients/heartbeat", heartbeat);
@@ -5133,7 +5282,7 @@ public partial class MainWindow : Window
                 }
 
                 if (existing is not null &&
-                    IsPlaybackLoaded(existing.Id) &&
+                    (IsPlaybackLoaded(existing.Id) || _monitoringRequestedStreamIds.Contains(existing.Id)) &&
                     (!string.Equals(existing.InputUrl, effectiveURL, StringComparison.Ordinal) || !enabled))
                 {
                     StopStreamPlayback(existing.Id);
@@ -5155,7 +5304,12 @@ public partial class MainWindow : Window
                 });
             }
 
-            foreach (var removedID in _players.Keys.Concat(_ffmpegPlaybackSessions.Keys).Distinct(StringComparer.OrdinalIgnoreCase).Where(streamID => merged.All(stream => !string.Equals(stream.Id, streamID, StringComparison.OrdinalIgnoreCase))).ToList())
+            foreach (var removedID in _players.Keys
+                         .Concat(_ffmpegPlaybackSessions.Keys)
+                         .Concat(_monitoringRequestedStreamIds)
+                         .Distinct(StringComparer.OrdinalIgnoreCase)
+                         .Where(streamID => merged.All(stream => !string.Equals(stream.Id, streamID, StringComparison.OrdinalIgnoreCase)))
+                         .ToList())
             {
                 StopStreamPlayback(removedID);
             }
@@ -5606,7 +5760,9 @@ public partial class MainWindow : Window
 
     private bool IsAnyPlaybackLoaded()
     {
-        return _players.Count > 0 || _ffmpegPlaybackSessions.Count > 0;
+        return _monitoringRequestedStreamIds.Count > 0 ||
+            _players.Count > 0 ||
+            _ffmpegPlaybackSessions.Count > 0;
     }
 
     private object? PlaybackOwnerFor(string streamId)
@@ -5634,15 +5790,40 @@ public partial class MainWindow : Window
 
     private bool ReceiverNeedsRestart(string streamId, PlaybackSnapshot snapshot, AlertProfileConfig profile)
     {
+        var stream = _config.Streams.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, streamId, StringComparison.OrdinalIgnoreCase));
+        if (stream is not null && IsPassiveReceiverAwaitingInput(stream, snapshot))
+        {
+            return false;
+        }
+
         return ShouldRestartReceiver(
             snapshot.State,
             IsOpeningTimedOut(streamId, snapshot, profile),
             IsPlaybackTimedOut(streamId, profile));
     }
 
+    private bool IsPassiveReceiverAwaitingInput(StreamConfig stream, PlaybackSnapshot snapshot)
+    {
+        if (!IsPassiveReceiverInput(stream.InputUrl, stream.InputProtocol) ||
+            (!string.Equals(snapshot.State, "starting", StringComparison.OrdinalIgnoreCase) &&
+             !string.Equals(snapshot.State, "opening", StringComparison.OrdinalIgnoreCase) &&
+             !string.Equals(snapshot.State, "buffering", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        if (_ffmpegPlaybackSessions.TryGetValue(stream.Id, out var session))
+        {
+            return session.IsProcessRunning && !session.HasFrame;
+        }
+
+        return _players.TryGetValue(stream.Id, out var player) && IsActivePlaybackState(player.State);
+    }
+
     private void SchedulePlaybackRestartIfNeeded(string streamId, PlaybackSnapshot snapshot)
     {
-        if (_playbackStartInFlight)
+        if (_playbackStartInFlight || !_monitoringRequestedStreamIds.Contains(streamId))
         {
             return;
         }
@@ -5722,7 +5903,7 @@ public partial class MainWindow : Window
     private void MarkPlaybackRestartAfterFailure(string streamId)
     {
         var stream = CurrentActivePlayableStream(streamId);
-        if (stream is null)
+        if (stream is null || !_monitoringRequestedStreamIds.Contains(streamId))
         {
             _playbackRestartAfter.Remove(streamId);
             _playbackRestartAttempts.Remove(streamId);
@@ -5776,6 +5957,7 @@ public partial class MainWindow : Window
     {
         if (!IsPlaybackOperationCurrent(operationGeneration) ||
             _playbackStartInFlight ||
+            !_monitoringRequestedStreamIds.Contains(streamId) ||
             !_playbackRestartAfter.ContainsKey(streamId))
         {
             return;
@@ -5818,11 +6000,19 @@ public partial class MainWindow : Window
                 return;
             }
 
-            if (restarted)
+            if (restarted && IsPlaybackLoaded(streamId))
             {
                 AppendDesktopLog($"Restarted receiver for {stream.Id} after playback state '{reason}'.");
                 _playbackRestartAfter.Remove(streamId);
                 UpdateFooter($"Receiver restarted for {stream.Name}.");
+            }
+            else if (restarted &&
+                _monitoringRequestedStreamIds.Contains(streamId) &&
+                _playbackRestartAfter.ContainsKey(streamId))
+            {
+                AppendDesktopLog(
+                    $"Receiver retry for {stream.Id} ended before input became ready; monitoring remains enabled for the next retry.");
+                UpdateFooter($"Monitoring {stream.Name}; waiting to retry the receiver.");
             }
             else if (!PlaybackOwnerMatches(streamId, expectedOwner) ||
                 !_playbackSnapshots.TryGetValue(streamId, out var latestSnapshot) ||
@@ -6001,7 +6191,7 @@ public partial class MainWindow : Window
     {
         return snapshot.State.ToLowerInvariant() switch
         {
-            "stopped" or "ended" => true,
+            "waiting" or "stopped" or "ended" or "retrying" => true,
             _ => false
         };
     }
@@ -6010,7 +6200,7 @@ public partial class MainWindow : Window
     {
         return state.ToLowerInvariant() switch
         {
-            "starting" or "opening" or "buffering" or "rendering" or "playing" => true,
+            "starting" or "opening" or "buffering" or "rendering" or "playing" or "retrying" => true,
             _ => false
         };
     }
@@ -6019,7 +6209,7 @@ public partial class MainWindow : Window
     {
         return state.ToLowerInvariant() switch
         {
-            "waiting" or "stopped" or "ended" or "error" => true,
+            "waiting" or "stopped" or "ended" or "error" or "retrying" => true,
             _ => false
         };
     }
@@ -6707,6 +6897,29 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
 
     public bool HasPresentedFrame => Interlocked.Read(ref _bitmapFramesPresented) > 0;
 
+    public bool IsProcessRunning
+    {
+        get
+        {
+            lock (_processLifecycleSync)
+            {
+                if (_disposed || _process is null)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    return !_process.HasExited;
+                }
+                catch (InvalidOperationException)
+                {
+                    return false;
+                }
+            }
+        }
+    }
+
     public long BitmapFramesQueued => Interlocked.Read(ref _bitmapFramesQueued);
 
     public long BitmapFramesDropped => Interlocked.Read(ref _bitmapFramesDropped);
@@ -7039,7 +7252,7 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
     private static List<string> BuildInputCandidates(string inputUrl, string protocol)
     {
         if (!inputUrl.StartsWith("srt://", StringComparison.OrdinalIgnoreCase) ||
-            inputUrl.Contains("mode=", StringComparison.OrdinalIgnoreCase))
+            TryGetInputQueryParameter(inputUrl, "mode", out _))
         {
             return [inputUrl];
         }
@@ -7058,6 +7271,55 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
 
         var separator = inputUrl.Contains('?', StringComparison.Ordinal) ? "&" : "?";
         return [$"{inputUrl}{separator}mode={explicitMode}"];
+    }
+
+    internal static string EffectiveSrtMode(string inputUrl, string protocol)
+    {
+        if (TryGetInputQueryParameter(inputUrl, "mode", out var queryMode))
+        {
+            return queryMode.Trim().ToLowerInvariant();
+        }
+
+        return (protocol ?? "").Trim().ToLowerInvariant() switch
+        {
+            "srt-listener" => "listener",
+            "srt-caller" => "caller",
+            "srt-rendezvous" => "rendezvous",
+            "srt" => "caller",
+            _ when inputUrl.StartsWith("srt://", StringComparison.OrdinalIgnoreCase) => "caller",
+            _ => ""
+        };
+    }
+
+    private static bool TryGetInputQueryParameter(string inputUrl, string parameterName, out string value)
+    {
+        value = "";
+        var queryStart = inputUrl.IndexOf('?');
+        if (queryStart < 0 || queryStart + 1 >= inputUrl.Length)
+        {
+            return false;
+        }
+
+        var fragmentStart = inputUrl.IndexOf('#', queryStart + 1);
+        var query = fragmentStart >= 0
+            ? inputUrl[(queryStart + 1)..fragmentStart]
+            : inputUrl[(queryStart + 1)..];
+        foreach (var item in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var separator = item.IndexOf('=');
+            var encodedName = separator >= 0 ? item[..separator] : item;
+            if (!string.Equals(Uri.UnescapeDataString(encodedName), parameterName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            value = separator >= 0 && separator + 1 < item.Length
+                ? Uri.UnescapeDataString(item[(separator + 1)..])
+                : "";
+            return true;
+        }
+
+        return false;
     }
 
     private static DateTimeOffset UtcTicksToDateTimeOffset(long ticks)

@@ -128,13 +128,21 @@ internal static class Program
             {
                 Named<Button>(window, "StartPlaybackButton")
                     .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                WaitForReceiverCount(window, 2, TimeSpan.FromSeconds(3));
-                Pump(window, 500);
-                AssertReceiverCount(window, 2);
-                senders.AddRange(StartLiveFixtureSenders(ffmpeg!, ports.Take(2).ToArray(), fixtureOffset: 0));
-                WaitForReceiverCount(window, 4, TimeSpan.FromSeconds(6));
-                senders.AddRange(StartLiveFixtureSenders(ffmpeg!, ports.Skip(2).ToArray(), fixtureOffset: 2));
+                var waitingListenerSessions = WaitForIdleListenerReceivers(
+                    window,
+                    expected: 4,
+                    timeout: TimeSpan.FromSeconds(4));
+                AssertIdleListenerReceiversRemainRegistered(
+                    window,
+                    waitingListenerSessions,
+                    duration: TimeSpan.FromSeconds(6));
+                senders.AddRange(StartLiveFixtureSenders(ffmpeg!, ports, fixtureOffset: 0));
                 WaitForVisibleAudioMeters(window, 4, TimeSpan.FromSeconds(10));
+                AssertFfmpegSessionsPreserved(
+                    window,
+                    waitingListenerSessions,
+                    expectedWidth: 640,
+                    expectedHeight: 360);
                 AssertPresentedAudioVideoPtsAligned(window, expectedStreams: 4);
                 AssertLiveChannelMetersMove(window, expectedStreams: 4, expectedChannels: 4);
                 AssertVisibleMeterTracksVideoPulse(window, "qa-01");
@@ -513,32 +521,88 @@ internal static class Program
         }
     }
 
-    private static void WaitForReceiverCount(MainWindow window, int expected, TimeSpan timeout)
+    private static Dictionary<string, object> WaitForIdleListenerReceivers(
+        MainWindow window,
+        int expected,
+        TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
+        var registered = 0;
+        var availableStartupSlots = 0;
+        var startInFlight = true;
         while (DateTime.UtcNow < deadline)
         {
             Pump(window, 100);
             var sessions = (IDictionary)PrivateField(window, "_ffmpegPlaybackSessions");
-            if (sessions.Count >= expected)
+            var startupSlots = (SemaphoreSlim)PrivateField(window, "_playbackStartupSlots");
+            registered = sessions.Count;
+            availableStartupSlots = startupSlots.CurrentCount;
+            startInFlight = (bool)PrivateField(window, "_playbackStartInFlight");
+            if (registered == expected && availableStartupSlots == 2 && !startInFlight)
             {
-                return;
+                var snapshot = FfmpegSessionSnapshot(window);
+                AssertIdleListenerSessionSet(window, snapshot);
+                Console.WriteLine(
+                    $"listener_receivers_ready_without_senders_ok registered={registered} available_startup_slots={availableStartupSlots}");
+                return snapshot;
             }
         }
 
-        throw new InvalidOperationException($"Timed out waiting for {expected} FFmpeg receivers.");
+        throw new InvalidOperationException(
+            $"Timed out waiting for {expected} senderless SRT listeners to register and release both startup slots: " +
+            $"registered={registered}, available_startup_slots={availableStartupSlots}, start_in_flight={startInFlight}.");
     }
 
-    private static void AssertReceiverCount(MainWindow window, int expected)
+    private static void AssertIdleListenerReceiversRemainRegistered(
+        MainWindow window,
+        IReadOnlyDictionary<string, object> baseline,
+        TimeSpan duration)
     {
-        var sessions = (IDictionary)PrivateField(window, "_ffmpegPlaybackSessions");
-        if (sessions.Count != expected)
+        var stopwatch = Stopwatch.StartNew();
+        while (stopwatch.Elapsed < duration)
         {
-            throw new InvalidOperationException(
-                $"Playback startup concurrency was not bounded: expected {expected} registered receivers before the first frames, got {sessions.Count}.");
+            Pump(window, 100);
+            AssertIdleListenerSessionSet(window, baseline);
+            var startupSlots = (SemaphoreSlim)PrivateField(window, "_playbackStartupSlots");
+            if (startupSlots.CurrentCount != 2 || (bool)PrivateField(window, "_playbackStartInFlight"))
+            {
+                throw new InvalidOperationException(
+                    "Senderless SRT listeners retained a startup slot after registration.");
+            }
         }
 
-        Console.WriteLine($"playback_startup_concurrency_ok registered={sessions.Count} limit=2");
+        Console.WriteLine(
+            $"listener_receivers_waited_for_senders_ok streams={baseline.Count} duration_ms={stopwatch.Elapsed.TotalMilliseconds:0}");
+    }
+
+    private static void AssertIdleListenerSessionSet(
+        MainWindow window,
+        IReadOnlyDictionary<string, object> baseline)
+    {
+        var sessions = (IDictionary)PrivateField(window, "_ffmpegPlaybackSessions");
+        if (sessions.Count != baseline.Count)
+        {
+            throw new InvalidOperationException(
+                $"Senderless SRT listener count changed while waiting: {baseline.Count} -> {sessions.Count}.");
+        }
+
+        foreach (var (streamId, original) in baseline)
+        {
+            if (!sessions.Contains(streamId) || !ReferenceEquals(sessions[streamId], original))
+            {
+                throw new InvalidOperationException(
+                    $"Senderless SRT listener {streamId} was stopped or replaced before its sender connected.");
+            }
+
+            var type = original.GetType();
+            var state = Convert.ToString(type.GetProperty("State")!.GetValue(original)) ?? "unknown";
+            var hasFrame = (bool)type.GetProperty("HasFrame")!.GetValue(original)!;
+            if (!string.Equals(state, "opening", StringComparison.OrdinalIgnoreCase) || hasFrame)
+            {
+                throw new InvalidOperationException(
+                    $"Senderless SRT listener {streamId} left its idle receive-ready state: state={state}, has_frame={hasFrame}.");
+            }
+        }
     }
 
     private static void WaitForVisibleAudioMeters(MainWindow window, int expected, TimeSpan timeout)
