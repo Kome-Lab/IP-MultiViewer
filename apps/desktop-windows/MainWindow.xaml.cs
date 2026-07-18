@@ -37,6 +37,7 @@ public partial class MainWindow : Window
     private readonly record struct PlaybackVideoFreshness(double AgeMs, double RenderDelayMs);
 
     private static readonly object ColorResourceSync = new();
+    private static readonly object MissingPlaybackOwner = new();
     private static readonly Dictionary<string, Brush> BrushCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, Color> ColorCache = new(StringComparer.OrdinalIgnoreCase);
 
@@ -70,6 +71,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, IVideoAnalysisMonitor> _videoMonitors = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _videoMonitorShareKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IVideoAnalysisMonitor> _sharedVideoMonitors = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _pendingVideoMonitorStarts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PlaybackSnapshot> _playbackSnapshots = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _issueSince = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _lastPlaybackTimeMs = new(StringComparer.OrdinalIgnoreCase);
@@ -78,6 +80,10 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, DateTimeOffset> _lastVideoAnalysisLogAt = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _playbackRestartAfter = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _playbackRestartAttempts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _pendingPlaybackRestarts = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _playbackStartupSlots = new(2, 2);
+    private readonly SemaphoreSlim _playbackLaunchGate = new(1, 1);
+    private Func<StreamConfig, System.Threading.Tasks.Task>? _playbackStarterOverride = null;
     private readonly Dictionary<string, int> _lastDisplayedPictures = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _lastVideoPresentedAt = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, List<Border>> _tileStatusFrames = new(StringComparer.OrdinalIgnoreCase);
@@ -120,10 +126,15 @@ public partial class MainWindow : Window
     private DateTimeOffset _lastAudioMeterAnimationAt = DateTimeOffset.MinValue;
     private bool _serverSyncInFlight;
     private bool _playbackStartInFlight;
+    private long _playbackOperationGeneration;
     private bool _layoutSelectionInProgress;
+    private DateTimeOffset _nextPlaybackLaunchAt = DateTimeOffset.MinValue;
     private const double TileFrameThickness = 3;
     private const double EmbeddedVideoMeterReservePx = 84;
     private const int LivePlaybackCacheMs = 100;
+    private static readonly TimeSpan PlaybackBatchStartSpacing = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan PlaybackStartupSlotTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan PlaybackStartupPollInterval = TimeSpan.FromMilliseconds(100);
     private const string GpuRenderingEnvironmentVariable = "IPMV_GPU_RENDERING";
     private const string ForceFfmpegPlaybackEnvironmentVariable = "IPMV_FORCE_FFMPEG_PLAYBACK";
     private static readonly TimeSpan PlaybackVideoFreshnessWarning = TimeSpan.FromSeconds(1);
@@ -1641,7 +1652,7 @@ public partial class MainWindow : Window
 
     private async void StartPlaybackButton_Click(object sender, RoutedEventArgs e)
     {
-        await StartPlaybackForActiveLayoutStreamsAsync("Starting playback", restartLoaded: true);
+        await StartPlaybackForActiveLayoutStreamsAsync("Starting playback", restartUnhealthy: true);
     }
 
     private void QueueInitialPlaybackStart()
@@ -1649,7 +1660,7 @@ public partial class MainWindow : Window
         _ = Dispatcher.BeginInvoke(new Action(async () =>
         {
             await System.Threading.Tasks.Task.Delay(500);
-            await StartPlaybackForActiveLayoutStreamsAsync("Auto-starting receivers", restartLoaded: false);
+            await StartPlaybackForActiveLayoutStreamsAsync("Auto-starting receivers", restartUnhealthy: false);
         }), DispatcherPriority.ApplicationIdle);
     }
 
@@ -1659,59 +1670,84 @@ public partial class MainWindow : Window
             "1",
             StringComparison.OrdinalIgnoreCase);
 
-    private async System.Threading.Tasks.Task StartPlaybackForActiveLayoutStreamsAsync(string actionLabel, bool restartLoaded)
+    private async System.Threading.Tasks.Task StartPlaybackForActiveLayoutStreamsAsync(string actionLabel, bool restartUnhealthy)
     {
         if (_playbackStartInFlight)
         {
             return;
         }
 
-        var streams = ActiveLayoutStreams().Where(stream => stream.Enabled).ToList();
+        var streamIds = ActiveLayoutStreams()
+            .Where(stream => stream.Enabled)
+            .Select(stream => stream.Id)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         var started = 0;
         var skipped = 0;
         var failed = 0;
         string? lastError = null;
+        var operationGeneration = _playbackOperationGeneration;
 
         _playbackStartInFlight = true;
         StartPlaybackButton.IsEnabled = false;
-        StopPlaybackButton.IsEnabled = false;
-        _playbackTimer.Stop();
-        UpdateFooter($"{actionLabel} for {streams.Count} layout streams...");
+        StopPlaybackButton.IsEnabled = true;
+        UpdateFooter($"{actionLabel} for {streamIds.Count} layout streams...");
 
         try
         {
-            foreach (var stream in streams)
+            var ffmpeg = FindFfmpeg();
+            if (!string.IsNullOrWhiteSpace(ffmpeg) && streamIds.Any(streamId =>
+                {
+                    var stream = CurrentActivePlayableStream(streamId);
+                    return stream is not null &&
+                        ShouldRouteThroughFfmpegPlayback(stream) &&
+                        ShouldStartPlayback(stream.Id, restartUnhealthy);
+                }))
             {
-                if (!CanPlayStream(stream))
-                {
-                    skipped++;
-                    continue;
-                }
+                await System.Threading.Tasks.Task.Run(() => FfmpegPlaybackSession.WarmUpCapabilities(ffmpeg));
+            }
 
-                if (!restartLoaded && IsPlaybackLoaded(stream.Id))
-                {
-                    skipped++;
-                    continue;
-                }
-
-                if (restartLoaded)
-                {
-                    _playbackRestartAttempts.Remove(stream.Id);
-                }
-
+            async System.Threading.Tasks.Task LaunchStreamAsync(string streamId)
+            {
                 try
                 {
-                    await StartStreamPlaybackAsync(stream);
-                    started++;
+                    var launched = await StartStreamPlaybackCoordinatedAsync(
+                        streamId,
+                        restartUnhealthy,
+                        expectedOperationGeneration: operationGeneration,
+                        allowDuringBatch: true);
+                    if (!IsPlaybackOperationCurrent(operationGeneration))
+                    {
+                        return;
+                    }
+
+                    if (launched)
+                    {
+                        started++;
+                        if (restartUnhealthy)
+                        {
+                            _playbackRestartAttempts.Remove(streamId);
+                        }
+                    }
+                    else
+                    {
+                        skipped++;
+                    }
+
                     UpdateFooter($"{actionLabel}: {started} started, {skipped} skipped, {failed} failed...");
-                    await System.Threading.Tasks.Task.Delay(75);
                 }
                 catch (Exception ex)
                 {
                     lastError = ex.Message;
                     failed++;
-                    AppendDesktopLog($"Start playback failed for {stream.Id}: {ex}");
+                    AppendDesktopLog($"Start playback failed for {streamId}: {ex}");
                 }
+            }
+
+            await System.Threading.Tasks.Task.WhenAll(streamIds.Select(LaunchStreamAsync));
+            if (!IsPlaybackOperationCurrent(operationGeneration))
+            {
+                return;
             }
 
             UpdateAllTileChrome();
@@ -1724,25 +1760,249 @@ public partial class MainWindow : Window
             _playbackStartInFlight = false;
             StartPlaybackButton.IsEnabled = true;
             StopPlaybackButton.IsEnabled = true;
-            _playbackTimer.Start();
         }
     }
 
-    private void StopPlaybackButton_Click(object sender, RoutedEventArgs e)
+    private bool ShouldStartPlayback(string streamId, bool restartUnhealthy)
     {
-        if (_playbackStartInFlight)
+        if (!IsPlaybackLoaded(streamId))
         {
-            UpdateFooter("Playback start is still in progress. Wait for it to finish before stopping.");
-            return;
+            return true;
         }
 
+        if (!restartUnhealthy || !_playbackSnapshots.TryGetValue(streamId, out var snapshot))
+        {
+            return false;
+        }
+
+        if (ShouldRestartLoadedPlayback(snapshot.State, restartUnhealthy))
+        {
+            return true;
+        }
+
+        var stream = _config.Streams.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, streamId, StringComparison.OrdinalIgnoreCase));
+        return stream is not null && ReceiverNeedsRestart(streamId, snapshot, AlertProfileFor(stream));
+    }
+
+    internal static bool ShouldRestartLoadedPlayback(string state, bool restartUnhealthy)
+    {
+        return restartUnhealthy && IsRecoverablePlaybackState(state);
+    }
+
+    private StreamConfig? CurrentActivePlayableStream(string streamId)
+    {
+        var stream = _config.Streams.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, streamId, StringComparison.OrdinalIgnoreCase));
+        return stream is not null &&
+            stream.Enabled &&
+            CanPlayStream(stream) &&
+            IsStreamInActiveLayout(stream.Id)
+                ? stream
+                : null;
+    }
+
+    private async System.Threading.Tasks.Task<bool> StartStreamPlaybackCoordinatedAsync(
+        string streamId,
+        bool restartUnhealthy,
+        object? expectedOwner = null,
+        bool forceRestart = false,
+        long? expectedOperationGeneration = null,
+        bool allowDuringBatch = false)
+    {
+        await _playbackStartupSlots.WaitAsync();
+        object? startedOwner = null;
+        try
+        {
+            await _playbackLaunchGate.WaitAsync();
+            try
+            {
+                if (ResolvePlaybackStartStream(
+                        streamId,
+                        restartUnhealthy,
+                        expectedOwner,
+                        forceRestart,
+                        expectedOperationGeneration,
+                        allowDuringBatch) is null)
+                {
+                    return false;
+                }
+
+                var launchDelay = _nextPlaybackLaunchAt - DateTimeOffset.UtcNow;
+                if (launchDelay > TimeSpan.Zero)
+                {
+                    await System.Threading.Tasks.Task.Delay(launchDelay);
+                }
+
+                var stream = ResolvePlaybackStartStream(
+                    streamId,
+                    restartUnhealthy,
+                    expectedOwner,
+                    forceRestart,
+                    expectedOperationGeneration,
+                    allowDuringBatch);
+                if (stream is null)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    if (_playbackStarterOverride is not null)
+                    {
+                        await _playbackStarterOverride(stream);
+                    }
+                    else
+                    {
+                        await StartStreamPlaybackAsync(stream);
+                    }
+                    startedOwner = PlaybackOwnerFor(streamId);
+                }
+                finally
+                {
+                    _nextPlaybackLaunchAt = DateTimeOffset.UtcNow.Add(PlaybackBatchStartSpacing);
+                }
+            }
+            finally
+            {
+                _playbackLaunchGate.Release();
+            }
+
+            if (startedOwner is null)
+            {
+                return false;
+            }
+
+            if (!await WaitForPlaybackStartupOutcomeAsync(streamId, startedOwner, expectedOperationGeneration))
+            {
+                if (expectedOperationGeneration is long generation && !IsPlaybackOperationCurrent(generation))
+                {
+                    if (ReferenceEquals(PlaybackOwnerFor(streamId), startedOwner))
+                    {
+                        StopStreamPlayback(streamId, resetRestartBackoff: false);
+                    }
+
+                    return false;
+                }
+
+                if (ReferenceEquals(PlaybackOwnerFor(streamId), startedOwner))
+                {
+                    StopStreamPlayback(streamId, resetRestartBackoff: false);
+                    _playbackSnapshots[streamId] = EmptyPlaybackSnapshot("error");
+                    MarkPlaybackRestartAfterFailure(streamId);
+                }
+
+                throw new TimeoutException(
+                    $"Playback startup for {streamId} did not receive input within {PlaybackStartupSlotTimeout.TotalSeconds:0} seconds.");
+            }
+            return true;
+        }
+        finally
+        {
+            _playbackStartupSlots.Release();
+        }
+    }
+
+    private StreamConfig? ResolvePlaybackStartStream(
+        string streamId,
+        bool restartUnhealthy,
+        object? expectedOwner,
+        bool forceRestart,
+        long? expectedOperationGeneration,
+        bool allowDuringBatch)
+    {
+        if ((expectedOperationGeneration is long generation && !IsPlaybackOperationCurrent(generation)) ||
+            (!allowDuringBatch && _playbackStartInFlight))
+        {
+            return null;
+        }
+
+        var stream = CurrentActivePlayableStream(streamId);
+        if (stream is null ||
+            (expectedOwner is not null && !PlaybackOwnerMatches(streamId, expectedOwner)) ||
+            (!forceRestart && !ShouldStartPlayback(streamId, restartUnhealthy)) ||
+            (forceRestart && (!stream.AnalysisEnabled || !ShouldUseFfmpegPlayback(stream))))
+        {
+            return null;
+        }
+
+        return stream;
+    }
+
+    private async System.Threading.Tasks.Task<bool> WaitForPlaybackStartupOutcomeAsync(
+        string streamId,
+        object expectedOwner,
+        long? expectedOperationGeneration)
+    {
+        var deadline = DateTimeOffset.UtcNow.Add(PlaybackStartupSlotTimeout);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (expectedOperationGeneration is long generation && !IsPlaybackOperationCurrent(generation))
+            {
+                return false;
+            }
+
+            var currentOwner = PlaybackOwnerFor(streamId);
+            if (!ReferenceEquals(currentOwner, expectedOwner))
+            {
+                return currentOwner is not null;
+            }
+
+            var (state, hasReceivedFrame) = expectedOwner switch
+            {
+                FfmpegPlaybackSession session => (session.State, session.HasFrame),
+                VlcMediaPlayer player => (player.State.ToString(), false),
+                _ => ("unknown", false)
+            };
+            if (IsPlaybackStartupFailed(state))
+            {
+                AppendDesktopLog($"Playback startup for {streamId} entered terminal state '{state}' before input became ready.");
+                return false;
+            }
+
+            if (IsPlaybackStartupReady(state, hasReceivedFrame))
+            {
+                return true;
+            }
+
+            await System.Threading.Tasks.Task.Delay(PlaybackStartupPollInterval);
+        }
+
+        if (expectedOperationGeneration is long finalGeneration && !IsPlaybackOperationCurrent(finalGeneration))
+        {
+            return false;
+        }
+
+        var finalOwner = PlaybackOwnerFor(streamId);
+        if (ReferenceEquals(finalOwner, expectedOwner))
+        {
+            AppendDesktopLog($"Playback startup timed out for {streamId}; stopping the connection attempt before starting the next queued receiver.");
+            return false;
+        }
+
+        return finalOwner is not null;
+    }
+
+    internal static bool IsPlaybackStartupReady(string state, bool hasReceivedFrame)
+    {
+        return !IsRecoverablePlaybackState(state) &&
+            (hasReceivedFrame || string.Equals(state, "playing", StringComparison.OrdinalIgnoreCase));
+    }
+
+    internal static bool IsPlaybackStartupFailed(string state) => IsRecoverablePlaybackState(state);
+
+    private void StopPlaybackButton_Click(object sender, RoutedEventArgs e)
+    {
+        var startWasInFlight = _playbackStartInFlight;
         var stopped = _players.Count;
         stopped += _ffmpegPlaybackSessions.Count;
         StopAllPlayback();
         RefreshPlaybackSurfaces();
         UpdateAllTileChrome();
         UpdatePlaybackSummary();
-        UpdateFooter($"Playback stopped: {stopped} streams.");
+        UpdateFooter(startWasInFlight
+            ? $"Playback start cancelled; stopped {stopped} streams."
+            : $"Playback stopped: {stopped} streams.");
     }
 
     private void OpenSettingsButton_Click(object sender, RoutedEventArgs e)
@@ -2673,7 +2933,13 @@ public partial class MainWindow : Window
             profile.FreezeDifferenceThreshold,
             profile.BlackThreshold,
             profile.BlackPixelRatioThreshold,
-            () => QueueImmediateVideoAlertEvaluation(stream.Id, blackFrameDetected: true),
+            () =>
+            {
+                if (session is not null)
+                {
+                    QueueImmediateFfmpegBlackFrameEvaluation(stream.Id, session);
+                }
+            },
             () =>
             {
                 if (session is not null)
@@ -2703,12 +2969,38 @@ public partial class MainWindow : Window
 
     private void OnFirstFfmpegFramePresented(StreamConfig stream, FfmpegPlaybackSession session)
     {
+        if (!_ffmpegPlaybackSessions.TryGetValue(stream.Id, out var currentSession) ||
+            !ReferenceEquals(currentSession, session))
+        {
+            return;
+        }
+
         var snapshot = session.CurrentPlaybackSnapshot();
         _playbackSnapshots[stream.Id] = snapshot;
         TrackPlaybackProgress(stream.Id, snapshot);
         RefreshPlaybackSurface(stream);
         UpdateTileChrome(stream);
         UpdatePlaybackSummary();
+    }
+
+    private void QueueImmediateFfmpegBlackFrameEvaluation(string streamId, FfmpegPlaybackSession session)
+    {
+        _ = Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (!_ffmpegPlaybackSessions.TryGetValue(streamId, out var currentSession) ||
+                !ReferenceEquals(currentSession, session))
+            {
+                return;
+            }
+
+            lock (_immediateVideoAlertEvaluationSync)
+            {
+                _pendingImmediateBlackFrameDetections[streamId] = DateTimeOffset.UtcNow;
+                _pendingImmediateVideoAlertEvaluations.Add(streamId);
+            }
+
+            RunImmediateVideoAlertEvaluation(streamId);
+        }), DispatcherPriority.Normal);
     }
 
     private void StartLibVlcPlayback(string streamId, string streamName, VlcMediaPlayer player, AudioLevelMonitor? audioMonitor, Media media)
@@ -2816,6 +3108,7 @@ public partial class MainWindow : Window
         _players.Remove(stream.Id);
         _audioMonitors.Remove(stream.Id);
         _playbackSnapshots[stream.Id] = EmptyPlaybackSnapshot("stopped");
+        MarkPlaybackRestartAfterFailure(stream.Id);
         RefreshPlaybackSurface(stream);
         UpdateTileChrome(stream);
         player.Dispose();
@@ -2875,6 +3168,7 @@ public partial class MainWindow : Window
 
     private void StopAllPlayback()
     {
+        CancelPendingPlaybackOperations();
         _playbackRestartAfter.Clear();
         _playbackRestartAttempts.Clear();
         var streamIds = new HashSet<string>(_players.Keys, StringComparer.OrdinalIgnoreCase);
@@ -2885,9 +3179,20 @@ public partial class MainWindow : Window
 
         foreach (var streamId in streamIds)
         {
-            StopStreamPlayback(streamId);
+            StopStreamPlayback(streamId, resetRestartBackoff: false);
         }
     }
+
+    private void CancelPendingPlaybackOperations()
+    {
+        unchecked
+        {
+            _playbackOperationGeneration++;
+        }
+    }
+
+    private bool IsPlaybackOperationCurrent(long expectedGeneration) =>
+        _playbackOperationGeneration == expectedGeneration;
 
     private void StopPlaybackOutsideActiveLayout(IReadOnlySet<string>? activeStreamIds = null)
     {
@@ -3006,7 +3311,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (TryStartSidecarVideoAnalysisMonitor(stream))
+        if (QueueSidecarVideoAnalysisMonitorStart(stream))
         {
             return;
         }
@@ -3031,7 +3336,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (TryStartSidecarVideoAnalysisMonitor(stream))
+        if (QueueSidecarVideoAnalysisMonitorStart(stream))
         {
             return;
         }
@@ -3088,6 +3393,222 @@ public partial class MainWindow : Window
         _videoMonitors[stream.Id] = session;
         AppendDesktopLog($"Video analysis monitor reused playback session for {stream.Id}.");
         return true;
+    }
+
+    private bool QueueSidecarVideoAnalysisMonitorStart(StreamConfig stream)
+    {
+        if (!GpuRenderingEnabled() ||
+            !stream.AnalysisEnabled ||
+            _videoMonitors.ContainsKey(stream.Id) ||
+            !CanPlayStream(stream) ||
+            string.IsNullOrWhiteSpace(FindFfmpeg()) ||
+            PlaybackOwnerFor(stream.Id) is not VlcMediaPlayer expectedPlayer)
+        {
+            return false;
+        }
+
+        if (!_pendingVideoMonitorStarts.Add(stream.Id))
+        {
+            return true;
+        }
+
+        var streamId = stream.Id;
+        var streamName = stream.Name;
+        var operationGeneration = _playbackOperationGeneration;
+        _ = Dispatcher.BeginInvoke(new Action(async () =>
+        {
+            try
+            {
+                while (_playbackStartInFlight && IsPlaybackOperationCurrent(operationGeneration))
+                {
+                    await System.Threading.Tasks.Task.Delay(PlaybackStartupPollInterval);
+                }
+
+                if (!IsPlaybackOperationCurrent(operationGeneration) ||
+                    !await WaitForPlaybackOwnerReadyAsync(streamId, expectedPlayer, operationGeneration))
+                {
+                    AppendDesktopLog($"GPU sidecar analysis start deferred for {streamId}: primary playback was not ready.");
+                    return;
+                }
+
+                await StartSidecarVideoAnalysisMonitorCoordinatedAsync(streamId, expectedPlayer, operationGeneration);
+            }
+            catch (Exception ex)
+            {
+                if (IsPlaybackOperationCurrent(operationGeneration))
+                {
+                    AppendDesktopLog($"GPU sidecar analysis start failed for {streamId}: {MaskStreamUrl(ex.Message)}");
+                    UpdateFooter($"Video analysis start failed for {streamName}: {ex.Message}");
+                }
+            }
+            finally
+            {
+                _pendingVideoMonitorStarts.Remove(streamId);
+                RequeueSidecarVideoAnalysisForReplacementOwner(streamId, expectedPlayer, operationGeneration);
+            }
+        }), DispatcherPriority.Background);
+        return true;
+    }
+
+    private async System.Threading.Tasks.Task<bool> WaitForPlaybackOwnerReadyAsync(
+        string streamId,
+        VlcMediaPlayer expectedPlayer,
+        long operationGeneration)
+    {
+        var deadline = DateTimeOffset.UtcNow.Add(PlaybackStartupSlotTimeout);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            if (!IsPlaybackOperationCurrent(operationGeneration) ||
+                !ReferenceEquals(PlaybackOwnerFor(streamId), expectedPlayer))
+            {
+                return false;
+            }
+
+            var state = expectedPlayer.State.ToString();
+            if (string.Equals(state, "playing", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (IsRecoverablePlaybackState(state))
+            {
+                return false;
+            }
+
+            await System.Threading.Tasks.Task.Delay(PlaybackStartupPollInterval);
+        }
+
+        return false;
+    }
+
+    private void RequeueSidecarVideoAnalysisForReplacementOwner(
+        string streamId,
+        VlcMediaPlayer expectedPlayer,
+        long operationGeneration)
+    {
+        if (!IsPlaybackOperationCurrent(operationGeneration) ||
+            _videoMonitors.ContainsKey(streamId) ||
+            PlaybackOwnerFor(streamId) is not VlcMediaPlayer currentPlayer ||
+            ReferenceEquals(currentPlayer, expectedPlayer))
+        {
+            return;
+        }
+
+        var stream = CurrentActivePlayableStream(streamId);
+        if (stream is not null && stream.AnalysisEnabled)
+        {
+            QueueSidecarVideoAnalysisMonitorStart(stream);
+        }
+    }
+
+    private async System.Threading.Tasks.Task<bool> StartSidecarVideoAnalysisMonitorCoordinatedAsync(
+        string streamId,
+        VlcMediaPlayer expectedPlayer,
+        long operationGeneration)
+    {
+        if (!IsPlaybackOperationCurrent(operationGeneration))
+        {
+            return false;
+        }
+
+        await _playbackStartupSlots.WaitAsync();
+        IVideoAnalysisMonitor? startedMonitor = null;
+        try
+        {
+            await _playbackLaunchGate.WaitAsync();
+            try
+            {
+                if (!IsPlaybackOperationCurrent(operationGeneration) ||
+                    CurrentSidecarAnalysisStream(streamId, expectedPlayer) is null)
+                {
+                    return false;
+                }
+
+                var launchDelay = _nextPlaybackLaunchAt - DateTimeOffset.UtcNow;
+                if (launchDelay > TimeSpan.Zero)
+                {
+                    await System.Threading.Tasks.Task.Delay(launchDelay);
+                }
+
+                var stream = CurrentSidecarAnalysisStream(streamId, expectedPlayer);
+                if (!IsPlaybackOperationCurrent(operationGeneration) || stream is null)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    if (!TryStartSidecarVideoAnalysisMonitor(stream) ||
+                        !_videoMonitors.TryGetValue(streamId, out startedMonitor))
+                    {
+                        return false;
+                    }
+                }
+                finally
+                {
+                    _nextPlaybackLaunchAt = DateTimeOffset.UtcNow.Add(PlaybackBatchStartSpacing);
+                }
+            }
+            finally
+            {
+                _playbackLaunchGate.Release();
+            }
+
+            var deadline = DateTimeOffset.UtcNow.Add(PlaybackStartupSlotTimeout);
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                if (!IsPlaybackOperationCurrent(operationGeneration))
+                {
+                    break;
+                }
+
+                if (!_videoMonitors.TryGetValue(streamId, out var currentMonitor) ||
+                    !ReferenceEquals(currentMonitor, startedMonitor))
+                {
+                    return true;
+                }
+
+                if (IsRecoverablePlaybackState(startedMonitor.State))
+                {
+                    AppendDesktopLog($"GPU sidecar analysis startup for {streamId} entered terminal state '{startedMonitor.State}'.");
+                    break;
+                }
+
+                if (string.Equals(startedMonitor.State, "playing", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                await System.Threading.Tasks.Task.Delay(PlaybackStartupPollInterval);
+            }
+
+            if (_videoMonitors.TryGetValue(streamId, out var timedOutMonitor) &&
+                ReferenceEquals(timedOutMonitor, startedMonitor))
+            {
+                StopVideoMonitor(streamId);
+                AppendDesktopLog($"GPU sidecar analysis startup timed out for {streamId}; stopped before releasing its connection slot.");
+            }
+
+            return false;
+        }
+        finally
+        {
+            _playbackStartupSlots.Release();
+        }
+    }
+
+    private StreamConfig? CurrentSidecarAnalysisStream(string streamId, VlcMediaPlayer expectedPlayer)
+    {
+        var stream = CurrentActivePlayableStream(streamId);
+        return stream is not null &&
+            GpuRenderingEnabled() &&
+            stream.AnalysisEnabled &&
+            !_videoMonitors.ContainsKey(streamId) &&
+            ReferenceEquals(PlaybackOwnerFor(streamId), expectedPlayer) &&
+            string.Equals(expectedPlayer.State.ToString(), "playing", StringComparison.OrdinalIgnoreCase) &&
+            !ShouldUseFfmpegPlayback(stream)
+                ? stream
+                : null;
     }
 
     private bool TryStartSidecarVideoAnalysisMonitor(StreamConfig stream)
@@ -3195,17 +3716,46 @@ public partial class MainWindow : Window
             return false;
         }
 
-        AppendDesktopLog($"Restarting {stream.Id} with shared FFmpeg playback/analysis to avoid a second source connection.");
+        var expectedOwner = PlaybackOwnerFor(stream.Id);
+        if (expectedOwner is null)
+        {
+            return false;
+        }
+
+        var operationGeneration = _playbackOperationGeneration;
         _ = Dispatcher.BeginInvoke(new Action(async () =>
         {
             try
             {
-                await StartStreamPlaybackAsync(stream);
+                while (_playbackStartInFlight && IsPlaybackOperationCurrent(operationGeneration))
+                {
+                    await System.Threading.Tasks.Task.Delay(PlaybackStartupPollInterval);
+                }
+
+                if (!IsPlaybackOperationCurrent(operationGeneration))
+                {
+                    return;
+                }
+
+                var restarted = await StartStreamPlaybackCoordinatedAsync(
+                    stream.Id,
+                    restartUnhealthy: true,
+                    expectedOwner,
+                    forceRestart: true,
+                    expectedOperationGeneration: operationGeneration,
+                    allowDuringBatch: false);
+                if (restarted)
+                {
+                    AppendDesktopLog($"Restarted {stream.Id} with shared FFmpeg playback/analysis to avoid a second source connection.");
+                }
             }
             catch (Exception ex)
             {
-                AppendDesktopLog($"Shared analysis playback restart failed for {stream.Id}: {ex}");
-                UpdateFooter($"Shared analysis restart failed for {stream.Name}: {ex.Message}");
+                if (IsPlaybackOperationCurrent(operationGeneration))
+                {
+                    AppendDesktopLog($"Shared analysis playback restart failed for {stream.Id}: {ex}");
+                    UpdateFooter($"Shared analysis restart failed for {stream.Name}: {ex.Message}");
+                }
             }
         }), DispatcherPriority.Background);
         return true;
@@ -3952,6 +4502,11 @@ public partial class MainWindow : Window
             }
         }
 
+        if (runSlowRefresh)
+        {
+            ScheduleOwnerlessPlaybackRestarts();
+        }
+
         var alertStateChanged = false;
         if (runSlowRefresh)
         {
@@ -3990,24 +4545,29 @@ public partial class MainWindow : Window
 
         _ = Dispatcher.BeginInvoke(new Action(() =>
         {
-            lock (_immediateVideoAlertEvaluationSync)
-            {
-                _pendingImmediateVideoAlertEvaluations.Remove(streamId);
-            }
-
-            var activeLayoutStreams = ActiveLayoutStreams();
-            var changed = EvaluatePlaybackAlerts(activeLayoutStreams, streamId);
-            UpdatePlaybackSummary(activeLayoutStreams);
-            UpdateSingleTileChrome(activeLayoutStreams, streamId);
-            if (!changed)
-            {
-                return;
-            }
-
-            LocalConfigStore.QueueSave(_config);
-            RenderAlerts();
-            _ = SyncWithServerAsync(force: true);
+            RunImmediateVideoAlertEvaluation(streamId);
         }), DispatcherPriority.Background);
+    }
+
+    private void RunImmediateVideoAlertEvaluation(string streamId)
+    {
+        lock (_immediateVideoAlertEvaluationSync)
+        {
+            _pendingImmediateVideoAlertEvaluations.Remove(streamId);
+        }
+
+        var activeLayoutStreams = ActiveLayoutStreams();
+        var changed = EvaluatePlaybackAlerts(activeLayoutStreams, streamId);
+        UpdatePlaybackSummary(activeLayoutStreams);
+        UpdateSingleTileChrome(activeLayoutStreams, streamId);
+        if (!changed)
+        {
+            return;
+        }
+
+        LocalConfigStore.QueueSave(_config);
+        RenderAlerts();
+        _ = SyncWithServerAsync(force: true);
     }
 
     private bool EvaluatePlaybackAlerts(IReadOnlyList<StreamConfig>? activeLayoutStreams = null, string? focusStreamId = null)
@@ -4051,7 +4611,7 @@ public partial class MainWindow : Window
             LogVideoAnalysisState(stream.Id, profile, snapshot, analysisUnavailable);
             var noSignal = !decodeError && (IsNoSignal(snapshot) || IsOpeningTimedOut(stream.Id, snapshot, profile) || IsPlaybackTimedOut(stream.Id, profile));
             var immediateBlackFrameDetected = HasPendingImmediateBlackFrameDetection(stream.Id, profile);
-            if (analysisUnavailable && IsAnalysisEnded(stream.Id))
+            if (analysisUnavailable && IsAnalysisMissingOrEnded(stream.Id))
             {
                 if (IssueDurationSec(stream.Id, "video.analysis_restart") >= Math.Max(3, profile.InputTimeoutSec))
                 {
@@ -5049,6 +5609,37 @@ public partial class MainWindow : Window
         return _players.Count > 0 || _ffmpegPlaybackSessions.Count > 0;
     }
 
+    private object? PlaybackOwnerFor(string streamId)
+    {
+        if (_ffmpegPlaybackSessions.TryGetValue(streamId, out var ffmpegSession))
+        {
+            return ffmpegSession;
+        }
+
+        return _players.TryGetValue(streamId, out var player) ? player : null;
+    }
+
+    private bool PlaybackOwnerMatches(string streamId, object expectedOwner)
+    {
+        var currentOwner = PlaybackOwnerFor(streamId);
+        return ReferenceEquals(expectedOwner, MissingPlaybackOwner)
+            ? currentOwner is null && _playbackRestartAfter.ContainsKey(streamId)
+            : ReferenceEquals(currentOwner, expectedOwner);
+    }
+
+    internal static bool ShouldRestartReceiver(string state, bool openingTimedOut, bool playbackTimedOut)
+    {
+        return IsRecoverablePlaybackState(state) || openingTimedOut || playbackTimedOut;
+    }
+
+    private bool ReceiverNeedsRestart(string streamId, PlaybackSnapshot snapshot, AlertProfileConfig profile)
+    {
+        return ShouldRestartReceiver(
+            snapshot.State,
+            IsOpeningTimedOut(streamId, snapshot, profile),
+            IsPlaybackTimedOut(streamId, profile));
+    }
+
     private void SchedulePlaybackRestartIfNeeded(string streamId, PlaybackSnapshot snapshot)
     {
         if (_playbackStartInFlight)
@@ -5068,9 +5659,7 @@ public partial class MainWindow : Window
         }
 
         var profile = AlertProfileFor(stream);
-        if (!IsRecoverablePlaybackState(snapshot.State) &&
-            !IsOpeningTimedOut(streamId, snapshot, profile) &&
-            !IsPlaybackVideoStaleForSurface(streamId, profile))
+        if (!ReceiverNeedsRestart(streamId, snapshot, profile))
         {
             _playbackRestartAfter.Remove(streamId);
             return;
@@ -5089,19 +5678,67 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!_pendingPlaybackRestarts.Add(streamId))
+        {
+            return;
+        }
+
         var nextRestartAttempt = (_playbackRestartAttempts.TryGetValue(streamId, out var currentAttempts) ? currentAttempts : 0) + 1;
         _playbackRestartAttempts[streamId] = nextRestartAttempt;
         _playbackRestartAfter[streamId] = now.Add(PlaybackRestartDelay(stream, nextRestartAttempt));
         var restartReason = snapshot.State;
+        var expectedOwner = PlaybackOwnerFor(streamId) ?? MissingPlaybackOwner;
+        var operationGeneration = _playbackOperationGeneration;
+
         _ = Dispatcher.BeginInvoke(new Action(async () =>
         {
-            await RestartSingleStreamPlaybackAsync(streamId, restartReason);
+            try
+            {
+                await RestartSingleStreamPlaybackAsync(streamId, restartReason, expectedOwner, operationGeneration);
+            }
+            finally
+            {
+                _pendingPlaybackRestarts.Remove(streamId);
+            }
         }), DispatcherPriority.Background);
+    }
+
+    private void ScheduleOwnerlessPlaybackRestarts()
+    {
+        foreach (var streamId in _playbackRestartAfter.Keys.ToArray())
+        {
+            if (IsPlaybackLoaded(streamId))
+            {
+                continue;
+            }
+
+            var snapshot = _playbackSnapshots.TryGetValue(streamId, out var currentSnapshot)
+                ? currentSnapshot
+                : EmptyPlaybackSnapshot("error");
+            SchedulePlaybackRestartIfNeeded(streamId, snapshot);
+        }
+    }
+
+    private void MarkPlaybackRestartAfterFailure(string streamId)
+    {
+        var stream = CurrentActivePlayableStream(streamId);
+        if (stream is null)
+        {
+            _playbackRestartAfter.Remove(streamId);
+            _playbackRestartAttempts.Remove(streamId);
+            return;
+        }
+
+        var restartAttempts = _playbackRestartAttempts.TryGetValue(streamId, out var attempts) ? attempts : 0;
+        _playbackRestartAfter[streamId] = DateTimeOffset.UtcNow.Add(PlaybackRestartDelay(stream, restartAttempts));
     }
 
     private TimeSpan PlaybackRestartDelay(StreamConfig stream, int restartAttempts)
     {
-        return TimeSpan.FromSeconds(PlaybackRestartDelaySeconds(AlertProfileFor(stream).InputTimeoutSec, restartAttempts));
+        return TimeSpan.FromSeconds(PlaybackRestartDelaySecondsForStream(
+            AlertProfileFor(stream).InputTimeoutSec,
+            restartAttempts,
+            stream.Id));
     }
 
     internal static double PlaybackRestartDelaySeconds(double inputTimeoutSec, int restartAttempts)
@@ -5111,9 +5748,40 @@ public partial class MainWindow : Window
         return Math.Min(60.0, baseSeconds * multiplier);
     }
 
-    private async System.Threading.Tasks.Task RestartSingleStreamPlaybackAsync(string streamId, string reason)
+    internal static double PlaybackRestartDelaySecondsForStream(double inputTimeoutSec, int restartAttempts, string streamId)
     {
-        if (_playbackStartInFlight)
+        var baseDelay = PlaybackRestartDelaySeconds(inputTimeoutSec, restartAttempts);
+        if (baseDelay >= 60 || string.IsNullOrWhiteSpace(streamId))
+        {
+            return baseDelay;
+        }
+
+        uint hash = 2166136261;
+        foreach (var character in streamId)
+        {
+            hash ^= char.ToUpperInvariant(character);
+            hash *= 16777619;
+        }
+
+        var maximumJitter = Math.Min(2.0, baseDelay * 0.25);
+        var jitterFraction = (hash % 1024) / 1023.0;
+        return Math.Min(60.0, baseDelay + maximumJitter * jitterFraction);
+    }
+
+    private async System.Threading.Tasks.Task RestartSingleStreamPlaybackAsync(
+        string streamId,
+        string reason,
+        object expectedOwner,
+        long operationGeneration)
+    {
+        if (!IsPlaybackOperationCurrent(operationGeneration) ||
+            _playbackStartInFlight ||
+            !_playbackRestartAfter.ContainsKey(streamId))
+        {
+            return;
+        }
+
+        if (!PlaybackOwnerMatches(streamId, expectedOwner))
         {
             return;
         }
@@ -5129,30 +5797,71 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!_playbackSnapshots.TryGetValue(streamId, out var currentSnapshot) ||
+            !ReceiverNeedsRestart(streamId, currentSnapshot, AlertProfileFor(stream)))
+        {
+            _playbackRestartAfter.Remove(streamId);
+            return;
+        }
+
         try
         {
-            AppendDesktopLog($"Restarting receiver for {stream.Id} after playback state '{reason}'.");
-            await StartStreamPlaybackAsync(stream);
-            _playbackRestartAfter.Remove(streamId);
-            UpdateFooter($"Receiver restarted for {stream.Name}.");
+            var restarted = await StartStreamPlaybackCoordinatedAsync(
+                streamId,
+                restartUnhealthy: true,
+                expectedOwner,
+                forceRestart: false,
+                expectedOperationGeneration: operationGeneration,
+                allowDuringBatch: false);
+            if (!IsPlaybackOperationCurrent(operationGeneration))
+            {
+                return;
+            }
+
+            if (restarted)
+            {
+                AppendDesktopLog($"Restarted receiver for {stream.Id} after playback state '{reason}'.");
+                _playbackRestartAfter.Remove(streamId);
+                UpdateFooter($"Receiver restarted for {stream.Name}.");
+            }
+            else if (!PlaybackOwnerMatches(streamId, expectedOwner) ||
+                !_playbackSnapshots.TryGetValue(streamId, out var latestSnapshot) ||
+                !ReceiverNeedsRestart(streamId, latestSnapshot, AlertProfileFor(stream)))
+            {
+                _playbackRestartAfter.Remove(streamId);
+            }
         }
         catch (Exception ex)
         {
-            var restartAttempts = _playbackRestartAttempts.TryGetValue(streamId, out var attempts) ? attempts : 0;
-            _playbackRestartAfter[streamId] = DateTimeOffset.UtcNow.Add(PlaybackRestartDelay(stream, restartAttempts));
+            if (!IsPlaybackOperationCurrent(operationGeneration))
+            {
+                return;
+            }
+
+            var currentOwner = PlaybackOwnerFor(streamId);
+            if (IsPlaybackOperationCurrent(operationGeneration) &&
+                _playbackRestartAttempts.ContainsKey(streamId) &&
+                (currentOwner is null || PlaybackOwnerMatches(streamId, expectedOwner)))
+            {
+                var restartAttempts = _playbackRestartAttempts.TryGetValue(streamId, out var attempts) ? attempts : 0;
+                _playbackRestartAfter[streamId] = DateTimeOffset.UtcNow.Add(PlaybackRestartDelay(stream, restartAttempts));
+            }
+
             AppendDesktopLog($"Receiver restart failed for {stream.Id}: {ex}");
             UpdateFooter($"Receiver restart failed for {stream.Name}: {ex.Message}");
         }
     }
 
-    private bool IsAnalysisEnded(string streamId)
+    private bool IsAnalysisMissingOrEnded(string streamId)
     {
         if (!_videoMonitors.TryGetValue(streamId, out var monitor))
         {
-            return false;
+            return true;
         }
 
-        return monitor.State.Equals("ended", StringComparison.OrdinalIgnoreCase) ||
+        return monitor.State.Equals("waiting", StringComparison.OrdinalIgnoreCase) ||
+            monitor.State.Equals("stopped", StringComparison.OrdinalIgnoreCase) ||
+            monitor.State.Equals("ended", StringComparison.OrdinalIgnoreCase) ||
             monitor.State.Equals("error", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -6258,6 +6967,11 @@ internal sealed class FfmpegPlaybackSession : IVideoAnalysisMonitor, IImmediateB
             path => new Lazy<bool>(
                 () => ProbeVideoPtsStatsSupport(path),
                 LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+    }
+
+    internal static void WarmUpCapabilities(string ffmpegPath)
+    {
+        _ = SupportsVideoPtsStats(ffmpegPath);
     }
 
     private static bool ProbeVideoPtsStatsSupport(string ffmpegPath)

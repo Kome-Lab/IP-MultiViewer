@@ -45,6 +45,7 @@ internal static class Program
     {
         var previousDataDir = Environment.GetEnvironmentVariable("IPMV_DATA_DIR");
         var previousForceFfmpeg = Environment.GetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK");
+        var previousDisableInitialPlayback = Environment.GetEnvironmentVariable("IPMV_DISABLE_INITIAL_PLAYBACK");
         var qaDataDir = Path.Combine(Path.GetTempPath(), $"ipmv-windows-qa-{Guid.NewGuid():N}");
         var outputPath = args.Length > 0
             ? Path.GetFullPath(args[0])
@@ -67,10 +68,12 @@ internal static class Program
             StringComparison.OrdinalIgnoreCase);
         var senders = new List<Process>();
         Dictionary<string, object>? liveSessionBaseline = null;
+        MainWindow? window = null;
 
         try
         {
             Environment.SetEnvironmentVariable("IPMV_DATA_DIR", qaDataDir);
+            Environment.SetEnvironmentVariable("IPMV_DISABLE_INITIAL_PLAYBACK", "1");
             AssertPreviewConfigPromotion();
             var liveFixtureMayBeSkipped = string.Equals(
                 Environment.GetEnvironmentVariable("IPMV_SKIP_LIVE_METER_QA"),
@@ -107,7 +110,7 @@ internal static class Program
                     UriKind.Absolute)
             });
 
-            var window = new MainWindow
+            window = new MainWindow
             {
                 Width = 1642,
                 Height = 958,
@@ -125,8 +128,12 @@ internal static class Program
             {
                 Named<Button>(window, "StartPlaybackButton")
                     .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                WaitForReceiverCount(window, 2, TimeSpan.FromSeconds(3));
+                Pump(window, 500);
+                AssertReceiverCount(window, 2);
+                senders.AddRange(StartLiveFixtureSenders(ffmpeg!, ports.Take(2).ToArray(), fixtureOffset: 0));
                 WaitForReceiverCount(window, 4, TimeSpan.FromSeconds(6));
-                senders.AddRange(StartLiveFixtureSenders(ffmpeg!, ports));
+                senders.AddRange(StartLiveFixtureSenders(ffmpeg!, ports.Skip(2).ToArray(), fixtureOffset: 2));
                 WaitForVisibleAudioMeters(window, 4, TimeSpan.FromSeconds(10));
                 AssertPresentedAudioVideoPtsAligned(window, expectedStreams: 4);
                 AssertLiveChannelMetersMove(window, expectedStreams: 4, expectedChannels: 4);
@@ -135,6 +142,7 @@ internal static class Program
                 AssertVisibleMeterPanelsFit(window);
                 AssertFfmpegSessionTier(window, expectedWidth: 640, expectedHeight: 360, expectedMinimumCount: 4);
                 liveSessionBaseline = FfmpegSessionSnapshot(window);
+                AssertRepeatedStartPreservesFfmpegSessions(window, liveSessionBaseline, expectedWidth: 640, expectedHeight: 360);
                 AssertRenderBackendIndicator(window, expectedOutput: "WPF 640x360");
                 if (includeAlertFixture)
                 {
@@ -167,6 +175,7 @@ internal static class Program
             CaptureAuxiliaryWindows(window, settingsOutputPath, alertHistoryOutputPath);
 
             window.Close();
+            window = null;
             Pump(null, 100);
             Console.WriteLine($"windows_ui_qa_ok live_meter={(liveFixtureEnabled ? "enabled" : "skipped")} vu={outputPath} peak={peakOutputPath}");
             return 0;
@@ -178,6 +187,19 @@ internal static class Program
         }
         finally
         {
+            if (window is not null)
+            {
+                try
+                {
+                    window.Close();
+                    Pump(null, 100);
+                }
+                catch
+                {
+                    // Receiver cleanup must not hide the original QA failure.
+                }
+            }
+
             foreach (var sender in senders)
             {
                 StopProcess(sender);
@@ -185,6 +207,7 @@ internal static class Program
 
             Environment.SetEnvironmentVariable("IPMV_DATA_DIR", previousDataDir);
             Environment.SetEnvironmentVariable("IPMV_FORCE_FFMPEG_PLAYBACK", previousForceFfmpeg);
+            Environment.SetEnvironmentVariable("IPMV_DISABLE_INITIAL_PLAYBACK", previousDisableInitialPlayback);
             try
             {
                 if (Directory.Exists(qaDataDir))
@@ -504,6 +527,18 @@ internal static class Program
         }
 
         throw new InvalidOperationException($"Timed out waiting for {expected} FFmpeg receivers.");
+    }
+
+    private static void AssertReceiverCount(MainWindow window, int expected)
+    {
+        var sessions = (IDictionary)PrivateField(window, "_ffmpegPlaybackSessions");
+        if (sessions.Count != expected)
+        {
+            throw new InvalidOperationException(
+                $"Playback startup concurrency was not bounded: expected {expected} registered receivers before the first frames, got {sessions.Count}.");
+        }
+
+        Console.WriteLine($"playback_startup_concurrency_ok registered={sessions.Count} limit=2");
     }
 
     private static void WaitForVisibleAudioMeters(MainWindow window, int expected, TimeSpan timeout)
@@ -1229,6 +1264,35 @@ internal static class Program
                 StringComparer.OrdinalIgnoreCase);
     }
 
+    private static void AssertRepeatedStartPreservesFfmpegSessions(
+        MainWindow window,
+        IReadOnlyDictionary<string, object> baseline,
+        int expectedWidth,
+        int expectedHeight)
+    {
+        var presentedBefore = baseline.ToDictionary(
+            entry => entry.Key,
+            entry => Convert.ToInt64(entry.Value.GetType().GetProperty("BitmapFramesPresented")!.GetValue(entry.Value)),
+            StringComparer.OrdinalIgnoreCase);
+
+        Named<Button>(window, "StartPlaybackButton")
+            .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        Pump(window, 600);
+        AssertFfmpegSessionsPreserved(window, baseline, expectedWidth, expectedHeight);
+
+        foreach (var (streamId, session) in baseline)
+        {
+            var presentedAfter = Convert.ToInt64(session.GetType().GetProperty("BitmapFramesPresented")!.GetValue(session));
+            if (presentedAfter <= presentedBefore[streamId])
+            {
+                throw new InvalidOperationException(
+                    $"Repeated Start interrupted live receiver {streamId}: presented frames did not continue ({presentedBefore[streamId]} -> {presentedAfter}).");
+            }
+        }
+
+        Console.WriteLine($"repeated_start_preserved_sessions_ok streams={baseline.Count}");
+    }
+
     private static void AssertFfmpegSessionsPreserved(
         MainWindow window,
         IReadOnlyDictionary<string, object> baseline,
@@ -1241,7 +1305,7 @@ internal static class Program
             if (!sessions.Contains(streamId) || !ReferenceEquals(sessions[streamId], original))
             {
                 throw new InvalidOperationException(
-                    $"Layout change reconnected persistent stream {streamId}; quality tiers must apply on the next receiver start without disrupting live SRT.");
+                    $"A non-restart operation reconnected persistent stream {streamId}; live receivers must retain their session identity.");
             }
 
             var width = Convert.ToInt32(original.GetType().GetProperty("OutputWidth")!.GetValue(original));
@@ -1588,7 +1652,10 @@ internal static class Program
             ?? throw new InvalidOperationException($"Private field {name} was not available for QA.");
     }
 
-    private static IReadOnlyList<Process> StartLiveFixtureSenders(string ffmpeg, IReadOnlyList<int> ports)
+    private static IReadOnlyList<Process> StartLiveFixtureSenders(
+        string ffmpeg,
+        IReadOnlyList<int> ports,
+        int fixtureOffset)
     {
         var sources = new[]
         {
@@ -1598,8 +1665,9 @@ internal static class Program
             "rgbtestsrc=size=640x360:rate=30"
         };
         var senders = new List<Process>(ports.Count);
-        for (var index = 0; index < ports.Count; index++)
+        for (var localIndex = 0; localIndex < ports.Count; localIndex++)
         {
+            var index = fixtureOffset + localIndex;
             var audio = index == 0
                 ? "aevalsrc=if(lt(mod(t\\,1.5)\\,0.4)\\,0.5*sin(2*PI*440*t)\\,0)|if(lt(mod(t\\,1.5)\\,0.4)\\,0.4*sin(2*PI*550*t)\\,0)|if(lt(mod(t\\,1.5)\\,0.4)\\,0.3*sin(2*PI*660*t)\\,0)|if(lt(mod(t\\,1.5)\\,0.4)\\,0.2*sin(2*PI*770*t)\\,0):s=48000:channel_layout=4.0"
                 : $"aevalsrc=(0.17+0.07*sin(2*PI*0.7*t))*sin(2*PI*{440 + index * 40}*t)|(0.13+0.06*sin(2*PI*0.9*t))*sin(2*PI*{550 + index * 40}*t)|(0.10+0.05*sin(2*PI*1.1*t))*sin(2*PI*{660 + index * 40}*t)|(0.07+0.04*sin(2*PI*1.3*t))*sin(2*PI*{770 + index * 40}*t):s=48000:channel_layout=4.0";
@@ -1612,7 +1680,7 @@ internal static class Program
                 "-c:v", "mpeg4", "-q:v", "6",
                 "-c:a", "aac", "-b:a", "192k",
                 "-f", "mpegts",
-                $"srt://127.0.0.1:{ports[index]}?mode=caller&pkt_size=1316"));
+                $"srt://127.0.0.1:{ports[localIndex]}?mode=caller&pkt_size=1316"));
         }
 
         return senders;

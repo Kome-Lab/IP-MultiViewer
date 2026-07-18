@@ -69,7 +69,11 @@ internal static class Program
             AssertTextSetHelperSkipsUnchangedText();
             AssertSrtCandidateModes();
             AssertLowLatencyPlaybackOptions();
+            AssertPlaybackStartPlanning();
             AssertPlaybackRestartBackoff();
+            AssertReceiverRestartPolicy();
+            AssertPlaybackStartupSlotsAreEnforced(window);
+            AssertPlaybackConcurrencyWiring(window);
             AssertGpuRenderingUsesLibVlcPlayback(window);
             Console.WriteLine("playback_routing_smoke_ok");
             AssertPlaybackStatusWaitsForPresentedVideo(window);
@@ -718,6 +722,752 @@ internal static class Program
         {
             throw new InvalidOperationException($"Playback restart backoff was {string.Join(", ", delays)}, want {string.Join(", ", expected)}.");
         }
+
+        var streamDelaySeconds = Method(
+            typeof(MainWindow),
+            "PlaybackRestartDelaySecondsForStream",
+            BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+        var streamIds = new[] { "smoke-restart-a", "smoke-restart-b", "smoke-restart-c", "smoke-restart-d" };
+        foreach (var (inputTimeoutSec, attempt) in new[]
+                 {
+                     (2.0, 0),
+                     (5.0, 1),
+                     (20.0, 0),
+                     (5.0, 3),
+                     (30.0, 1),
+                     (5.0, 9)
+                 })
+        {
+            var baseDelay = (double)delaySeconds.Invoke(null, [inputTimeoutSec, attempt])!;
+            var maximumDelay = Math.Min(60.0, baseDelay + Math.Min(2.0, baseDelay * 0.25));
+            var jittered = streamIds
+                .Select(streamId => (double)streamDelaySeconds.Invoke(null, [inputTimeoutSec, attempt, streamId])!)
+                .ToArray();
+            if (jittered.Any(delay => !double.IsFinite(delay) || delay < baseDelay || delay > maximumDelay) ||
+                jittered.Where((delay, index) =>
+                    delay != (double)streamDelaySeconds.Invoke(null, [inputTimeoutSec, attempt, streamIds[index]])!).Any() ||
+                (baseDelay >= 60.0 && jittered.Any(delay => delay != 60.0)) ||
+                (baseDelay < 60.0 && jittered.Distinct().Count() < 2))
+            {
+                throw new InvalidOperationException(
+                    $"Per-stream restart jitter was not stable and bounded for timeout={inputTimeoutSec}, attempt={attempt}: {string.Join(", ", jittered)}.");
+            }
+        }
+    }
+
+    private static void AssertPlaybackStartPlanning()
+    {
+        var shouldRestart = Method(
+            typeof(MainWindow),
+            "ShouldRestartLoadedPlayback",
+            BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+        foreach (var state in new[] { "starting", "opening", "buffering", "rendering", "playing" })
+        {
+            if ((bool)shouldRestart.Invoke(null, [state, true])!)
+            {
+                throw new InvalidOperationException($"Manual Start would replace a healthy or opening receiver in state '{state}'.");
+            }
+        }
+
+        foreach (var state in new[] { "waiting", "stopped", "ended", "error" })
+        {
+            if (!(bool)shouldRestart.Invoke(null, [state, true])!)
+            {
+                throw new InvalidOperationException($"Manual Start would not retry terminal receiver state '{state}'.");
+            }
+
+            if ((bool)shouldRestart.Invoke(null, [state, false])!)
+            {
+                throw new InvalidOperationException($"Automatic initial Start would replace loaded receiver state '{state}'.");
+            }
+        }
+    }
+
+    private static void AssertReceiverRestartPolicy()
+    {
+        var shouldRestart = Method(
+            typeof(MainWindow),
+            "ShouldRestartReceiver",
+            BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+        if ((bool)shouldRestart.Invoke(null, ["playing", false, false])! ||
+            !(bool)shouldRestart.Invoke(null, ["playing", false, true])! ||
+            !(bool)shouldRestart.Invoke(null, ["opening", true, false])! ||
+            !(bool)shouldRestart.Invoke(null, ["ended", false, false])!)
+        {
+            throw new InvalidOperationException("Receiver restart policy did not separate render freshness from input progress and terminal state.");
+        }
+
+        var startupReady = Method(
+            typeof(MainWindow),
+            "IsPlaybackStartupReady",
+            BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+        var startupFailed = Method(
+            typeof(MainWindow),
+            "IsPlaybackStartupFailed",
+            BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+        if ((bool)startupReady.Invoke(null, ["opening", false])! ||
+            !(bool)startupReady.Invoke(null, ["opening", true])! ||
+            !(bool)startupReady.Invoke(null, ["playing", false])! ||
+            (bool)startupReady.Invoke(null, ["error", false])! ||
+            (bool)startupReady.Invoke(null, ["error", true])! ||
+            (bool)startupFailed.Invoke(null, ["opening"])! ||
+            (bool)startupFailed.Invoke(null, ["playing"])! ||
+            !(bool)startupFailed.Invoke(null, ["waiting"])! ||
+            !(bool)startupFailed.Invoke(null, ["error"])!)
+        {
+            throw new InvalidOperationException("Playback startup readiness did not distinguish usable input from terminal failure.");
+        }
+    }
+
+    private static void AssertPlaybackStartupSlotsAreEnforced(MainWindow window)
+    {
+        var startupTimeout = (TimeSpan)(typeof(MainWindow)
+            .GetField("PlaybackStartupSlotTimeout", BindingFlags.Static | BindingFlags.NonPublic)
+            ?.GetValue(null) ?? throw new InvalidOperationException("Playback startup timeout field was not found."));
+        if (startupTimeout != TimeSpan.FromSeconds(5))
+        {
+            throw new InvalidOperationException($"Playback startup hard deadline changed unexpectedly: {startupTimeout}.");
+        }
+
+        var config = (LocalConfig)Field(window, "_config").GetValue(window)!;
+        var activeLayout = config.Layouts.FirstOrDefault(layout =>
+                string.Equals(layout.Id, config.ActiveLayoutId, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException("Startup slot smoke requires an active layout.");
+        var activeStreams = activeLayout.Tiles
+            .OrderBy(tile => tile.Index)
+            .Select(tile => config.Streams.FirstOrDefault(stream =>
+                string.Equals(stream.Id, tile.StreamId, StringComparison.OrdinalIgnoreCase)))
+            .Where(stream => stream is not null)
+            .Cast<StreamConfig>()
+            .DistinctBy(stream => stream.Id, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (activeStreams.Length < 4)
+        {
+            throw new InvalidOperationException("Startup slot smoke requires four streams assigned to the active layout.");
+        }
+
+        var testStreams = activeStreams.Take(4).ToArray();
+        var testStreamIds = testStreams.Select(stream => stream.Id).ToArray();
+        var originalStreamStates = activeStreams.ToDictionary(
+            stream => stream.Id,
+            stream => new PlaybackStreamFixtureState(
+                stream.Enabled,
+                stream.InputUrl,
+                stream.InputProtocol,
+                stream.AnalysisEnabled,
+                stream.AudioMonitorEnabled),
+            StringComparer.OrdinalIgnoreCase);
+        var ffmpegSessions = (IDictionary)Field(window, "_ffmpegPlaybackSessions").GetValue(window)!;
+        var playbackSnapshots = (IDictionary)Field(window, "_playbackSnapshots").GetValue(window)!;
+        var lastProgressAt = (IDictionary)Field(window, "_lastPlaybackProgressAt").GetValue(window)!;
+        var restartAfter = (IDictionary)Field(window, "_playbackRestartAfter").GetValue(window)!;
+        var restartAttempts = (IDictionary)Field(window, "_playbackRestartAttempts").GetValue(window)!;
+        var touchedDictionaries = new[]
+        {
+            ffmpegSessions,
+            playbackSnapshots,
+            lastProgressAt,
+            restartAfter,
+            restartAttempts
+        };
+        var dictionaryStates = touchedDictionaries.ToDictionary(
+            dictionary => dictionary,
+            dictionary => testStreamIds.ToDictionary(
+                streamId => streamId,
+                streamId => new DictionaryEntryFixtureState(dictionary.Contains(streamId), dictionary[streamId]),
+                StringComparer.OrdinalIgnoreCase));
+        var startButton = (Button)Field(window, "StartPlaybackButton").GetValue(window)!;
+        var stopButton = (Button)Field(window, "StopPlaybackButton").GetValue(window)!;
+        var footer = (TextBlock)Field(window, "FooterText").GetValue(window)!;
+        var startInFlightField = Field(window, "_playbackStartInFlight");
+        var starterOverrideField = Field(window, "_playbackStarterOverride");
+        var nextLaunchAtField = Field(window, "_nextPlaybackLaunchAt");
+        var operationGenerationField = Field(window, "_playbackOperationGeneration");
+        var startupSlots = (SemaphoreSlim)Field(window, "_playbackStartupSlots").GetValue(window)!;
+        var originalStartButtonEnabled = startButton.IsEnabled;
+        var originalStopButtonEnabled = stopButton.IsEnabled;
+        var originalFooter = footer.Text;
+        var originalStartInFlight = (bool)startInFlightField.GetValue(window)!;
+        var originalStarterOverride = starterOverrideField.GetValue(window);
+        var originalNextLaunchAt = nextLaunchAtField.GetValue(window);
+        var originalOperationGeneration = operationGenerationField.GetValue(window);
+        var originalSynchronizationContext = SynchronizationContext.Current;
+        var sessionType = DesktopType("FfmpegPlaybackSession");
+        var createdSessions = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        var launchTimes = new List<DateTimeOffset>();
+
+        void PumpUntil(Func<bool> predicate, TimeSpan timeout, string failure)
+        {
+            var deadline = DateTime.UtcNow.Add(timeout);
+            while (!predicate() && DateTime.UtcNow < deadline)
+            {
+                Pump(window, 50);
+            }
+
+            if (!predicate())
+            {
+                throw new InvalidOperationException(failure);
+            }
+        }
+
+        try
+        {
+            if (!originalStartButtonEnabled || originalStartInFlight || startupSlots.CurrentCount != 2)
+            {
+                throw new InvalidOperationException("Playback startup slots were not idle before the offline concurrency smoke.");
+            }
+
+            foreach (var stream in activeStreams)
+            {
+                stream.Enabled = false;
+            }
+
+            for (var index = 0; index < testStreams.Length; index++)
+            {
+                var stream = testStreams[index];
+                stream.Enabled = true;
+                stream.InputUrl = $"rtsp://127.0.0.1:{19201 + index}/offline";
+                stream.InputProtocol = "rtsp";
+                stream.AnalysisEnabled = false;
+                stream.AudioMonitorEnabled = false;
+            }
+
+            foreach (var dictionary in touchedDictionaries)
+            {
+                foreach (var streamId in testStreamIds)
+                {
+                    dictionary.Remove(streamId);
+                }
+            }
+
+            Func<StreamConfig, System.Threading.Tasks.Task> fakeStarter = stream =>
+            {
+                launchTimes.Add(DateTimeOffset.UtcNow);
+                restartAfter.Remove(stream.Id);
+                var session = CreateFfmpegSession(sessionType, "ffmpeg", stream.InputUrl, stream.InputProtocol);
+                Field(session, "_state").SetValue(session, "opening");
+                createdSessions[stream.Id] = session;
+                ffmpegSessions[stream.Id] = session;
+                playbackSnapshots[stream.Id] = CreatePlaybackSnapshot("opening", displayedPictures: 0);
+                lastProgressAt[stream.Id] = DateTimeOffset.UtcNow;
+                return System.Threading.Tasks.Task.CompletedTask;
+            };
+            starterOverrideField.SetValue(window, fakeStarter);
+            nextLaunchAtField.SetValue(window, DateTimeOffset.MinValue);
+            SynchronizationContext.SetSynchronizationContext(
+                new DispatcherSynchronizationContext(window.Dispatcher));
+
+            startButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            PumpUntil(
+                () => createdSessions.Count >= 2,
+                TimeSpan.FromSeconds(1.5),
+                "Two startup slots were not filled by the first two receivers.");
+            Pump(window, 300);
+            if (createdSessions.Count != 2 || startupSlots.CurrentCount != 0 || !(bool)startInFlightField.GetValue(window)!)
+            {
+                throw new InvalidOperationException(
+                    $"Playback startup exceeded its two-slot limit before readiness: created={createdSessions.Count}, available={startupSlots.CurrentCount}.");
+            }
+
+            var firstReadySession = createdSessions.First();
+            var stalledSession = createdSessions.Skip(1).First();
+            Field(firstReadySession.Value, "_state").SetValue(firstReadySession.Value, "playing");
+            PumpUntil(
+                () => createdSessions.Count == 3,
+                TimeSpan.FromSeconds(1.5),
+                "A ready receiver did not release its startup slot for the third stream.");
+            foreach (var (streamId, session) in createdSessions)
+            {
+                if (!string.Equals(streamId, stalledSession.Key, StringComparison.OrdinalIgnoreCase))
+                {
+                    Field(session, "_state").SetValue(session, "playing");
+                }
+            }
+
+            PumpUntil(
+                () => createdSessions.Count == 4,
+                TimeSpan.FromSeconds(1.5),
+                "The fourth receiver did not enter a startup slot after another receiver became ready.");
+            foreach (var (streamId, session) in createdSessions)
+            {
+                if (!string.Equals(streamId, stalledSession.Key, StringComparison.OrdinalIgnoreCase))
+                {
+                    Field(session, "_state").SetValue(session, "playing");
+                }
+            }
+
+            PumpUntil(
+                () => !(bool)startInFlightField.GetValue(window)!,
+                TimeSpan.FromSeconds(6),
+                "Playback startup did not stop the stalled receiver at its hard deadline.");
+            const string expectedSummary = "Starting playback complete: 3 started, 0 skipped, 1 failed.";
+            var stalledSnapshot = playbackSnapshots[stalledSession.Key];
+            var stalledState = stalledSnapshot?.GetType().GetProperty("State")?.GetValue(stalledSnapshot)?.ToString();
+            var stalledRetryAt = restartAfter.Contains(stalledSession.Key)
+                ? (DateTimeOffset)restartAfter[stalledSession.Key]!
+                : DateTimeOffset.MinValue;
+            if (startupSlots.CurrentCount != 2 ||
+                ffmpegSessions.Contains(stalledSession.Key) ||
+                !string.Equals(stalledState, "error", StringComparison.OrdinalIgnoreCase) ||
+                stalledRetryAt <= DateTimeOffset.UtcNow ||
+                !footer.Text.StartsWith(expectedSummary, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Playback startup timeout did not terminate and preserve a future retry deadline before releasing its slot: available={startupSlots.CurrentCount}, stalledOwner={ffmpegSessions.Contains(stalledSession.Key)}, stalledState={stalledState}, retryAt={stalledRetryAt:O}, footer={footer.Text}");
+            }
+
+            if (launchTimes.Count != 4)
+            {
+                throw new InvalidOperationException($"Startup spacing smoke recorded {launchTimes.Count} launches; expected 4.");
+            }
+            for (var index = 1; index < launchTimes.Count; index++)
+            {
+                var spacing = launchTimes[index] - launchTimes[index - 1];
+                if (spacing < TimeSpan.FromMilliseconds(200))
+                {
+                    throw new InvalidOperationException($"Receiver launches were not globally staggered: spacing={spacing.TotalMilliseconds:0.0}ms.");
+                }
+            }
+
+            var healthyOwners = createdSessions
+                .Where(pair => !string.Equals(pair.Key, stalledSession.Key, StringComparison.OrdinalIgnoreCase))
+                .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+            foreach (var streamId in healthyOwners.Keys)
+            {
+                playbackSnapshots[streamId] = CreatePlaybackSnapshot("playing", displayedPictures: 12);
+                lastProgressAt[streamId] = DateTimeOffset.UtcNow;
+            }
+            var mixedStartLaunchBaseline = launchTimes.Count;
+            startButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            PumpUntil(
+                () => launchTimes.Count == mixedStartLaunchBaseline + 1,
+                TimeSpan.FromSeconds(1.5),
+                "Mixed healthy/failed Start did not select the failed receiver.");
+            var retriedStalledSession = createdSessions[stalledSession.Key];
+            Field(retriedStalledSession, "_state").SetValue(retriedStalledSession, "playing");
+            PumpUntil(
+                () => !(bool)startInFlightField.GetValue(window)!,
+                TimeSpan.FromSeconds(1.5),
+                "Mixed healthy/failed Start did not complete after the failed receiver became ready.");
+            const string expectedMixedSummary = "Starting playback complete: 1 started, 3 skipped, 0 failed.";
+            if (healthyOwners.Any(pair => !ReferenceEquals(ffmpegSessions[pair.Key], pair.Value)) ||
+                ReferenceEquals(retriedStalledSession, stalledSession.Value) ||
+                !footer.Text.StartsWith(expectedMixedSummary, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Mixed Start reset a healthy receiver or did not exclusively retry the failed receiver.");
+            }
+
+            stopButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Pump(window, 100);
+            var cancellationLaunchBaseline = launchTimes.Count;
+            startButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            PumpUntil(
+                () => launchTimes.Count >= cancellationLaunchBaseline + 2,
+                TimeSpan.FromSeconds(1.5),
+                "Cancellation smoke did not fill the two startup slots.");
+            if (!stopButton.IsEnabled)
+            {
+                throw new InvalidOperationException("Stop remained disabled while receiver startup was in progress.");
+            }
+
+            stopButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            PumpUntil(
+                () => !(bool)startInFlightField.GetValue(window)!,
+                TimeSpan.FromSeconds(1.5),
+                "Stop did not cancel receivers waiting in the startup coordinator.");
+            var launchesAfterCancellation = launchTimes.Count;
+            Pump(window, 400);
+            if (launchTimes.Count != launchesAfterCancellation ||
+                testStreamIds.Any(ffmpegSessions.Contains) ||
+                testStreamIds.Any(restartAfter.Contains) ||
+                startupSlots.CurrentCount != 2 ||
+                !footer.Text.StartsWith("Playback start cancelled", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Cancelled startup launched another receiver, retained retry intent, leaked a slot, or overwrote the Stop result.");
+            }
+
+            Console.WriteLine("playback_startup_slots_smoke_ok limit=2 streams=4 stalled=terminated mixed=preserved cancel=clean");
+        }
+        finally
+        {
+            var cleanupDeadline = DateTime.UtcNow.AddSeconds(3);
+            while ((bool)startInFlightField.GetValue(window)! && DateTime.UtcNow < cleanupDeadline)
+            {
+                foreach (var session in createdSessions.Values)
+                {
+                    Field(session, "_state").SetValue(session, "error");
+                }
+                Pump(window, 50);
+            }
+
+            StopWindowTimers(window);
+            SynchronizationContext.SetSynchronizationContext(originalSynchronizationContext);
+            starterOverrideField.SetValue(window, originalStarterOverride);
+            nextLaunchAtField.SetValue(window, originalNextLaunchAt);
+            operationGenerationField.SetValue(window, originalOperationGeneration);
+            startInFlightField.SetValue(window, originalStartInFlight);
+            startButton.IsEnabled = originalStartButtonEnabled;
+            stopButton.IsEnabled = originalStopButtonEnabled;
+            footer.Text = originalFooter;
+            foreach (var stream in activeStreams)
+            {
+                var state = originalStreamStates[stream.Id];
+                stream.Enabled = state.Enabled;
+                stream.InputUrl = state.InputUrl;
+                stream.InputProtocol = state.InputProtocol;
+                stream.AnalysisEnabled = state.AnalysisEnabled;
+                stream.AudioMonitorEnabled = state.AudioMonitorEnabled;
+            }
+
+            foreach (var dictionary in touchedDictionaries)
+            {
+                foreach (var streamId in testStreamIds)
+                {
+                    var state = dictionaryStates[dictionary][streamId];
+                    if (state.Exists)
+                    {
+                        dictionary[streamId] = state.Value;
+                    }
+                    else
+                    {
+                        dictionary.Remove(streamId);
+                    }
+                }
+            }
+
+            foreach (var session in createdSessions.Values.Distinct())
+            {
+                DisposeReflective(session);
+            }
+        }
+    }
+
+    private static void AssertPlaybackConcurrencyWiring(MainWindow window)
+    {
+        var config = (LocalConfig)Field(window, "_config").GetValue(window)!;
+        var activeLayout = config.Layouts.FirstOrDefault(layout =>
+                string.Equals(layout.Id, config.ActiveLayoutId, StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException("Concurrency smoke requires an active layout.");
+        var activeStreamIds = activeLayout.Tiles
+            .OrderBy(tile => tile.Index)
+            .Select(tile => tile.StreamId)
+            .Where(streamId => !string.IsNullOrWhiteSpace(streamId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var activeStreams = activeStreamIds
+            .Select(streamId => config.Streams.FirstOrDefault(stream =>
+                string.Equals(stream.Id, streamId, StringComparison.OrdinalIgnoreCase)))
+            .Where(stream => stream is not null)
+            .Cast<StreamConfig>()
+            .ToArray();
+        if (activeStreams.Length < 2)
+        {
+            throw new InvalidOperationException("Concurrency smoke requires two streams assigned to the active layout.");
+        }
+
+        var streamA = activeStreams[0];
+        var streamB = activeStreams[1];
+        var originalStreamStates = activeStreams.ToDictionary(
+            stream => stream.Id,
+            stream => new PlaybackStreamFixtureState(
+                stream.Enabled,
+                stream.InputUrl,
+                stream.InputProtocol,
+                stream.AnalysisEnabled,
+                stream.AudioMonitorEnabled),
+            StringComparer.OrdinalIgnoreCase);
+        var startButton = (Button)Field(window, "StartPlaybackButton").GetValue(window)!;
+        var stopButton = (Button)Field(window, "StopPlaybackButton").GetValue(window)!;
+        var footer = (TextBlock)Field(window, "FooterText").GetValue(window)!;
+        var originalStartButtonEnabled = startButton.IsEnabled;
+        var originalStopButtonEnabled = stopButton.IsEnabled;
+        var originalFooterText = footer.Text;
+        var startInFlightField = Field(window, "_playbackStartInFlight");
+        var originalStartInFlight = (bool)startInFlightField.GetValue(window)!;
+        var lastSlowRefreshField = Field(window, "_lastSlowPlaybackRefreshAt");
+        var originalLastSlowRefreshAt = lastSlowRefreshField.GetValue(window);
+        var operationGenerationField = Field(window, "_playbackOperationGeneration");
+        var originalOperationGeneration = operationGenerationField.GetValue(window);
+        var starterOverrideField = Field(window, "_playbackStarterOverride");
+        var originalStarterOverride = starterOverrideField.GetValue(window);
+        var ffmpegSessions = (IDictionary)Field(window, "_ffmpegPlaybackSessions").GetValue(window)!;
+        var playbackSnapshots = (IDictionary)Field(window, "_playbackSnapshots").GetValue(window)!;
+        var lastProgressAt = (IDictionary)Field(window, "_lastPlaybackProgressAt").GetValue(window)!;
+        var lastPresentedAt = (IDictionary)Field(window, "_lastVideoPresentedAt").GetValue(window)!;
+        var lastDisplayedPictures = (IDictionary)Field(window, "_lastDisplayedPictures").GetValue(window)!;
+        var restartAfter = (IDictionary)Field(window, "_playbackRestartAfter").GetValue(window)!;
+        var restartAttempts = (IDictionary)Field(window, "_playbackRestartAttempts").GetValue(window)!;
+        var pendingRestarts = (ISet<string>)Field(window, "_pendingPlaybackRestarts").GetValue(window)!;
+        var touchedDictionaries = new[]
+        {
+            ffmpegSessions,
+            playbackSnapshots,
+            lastProgressAt,
+            lastPresentedAt,
+            lastDisplayedPictures,
+            restartAfter,
+            restartAttempts
+        };
+        var dictionaryStates = touchedDictionaries.ToDictionary(
+            dictionary => dictionary,
+            dictionary => new[] { streamA.Id, streamB.Id }.ToDictionary(
+                streamId => streamId,
+                streamId => new DictionaryEntryFixtureState(dictionary.Contains(streamId), dictionary[streamId]),
+                StringComparer.OrdinalIgnoreCase));
+        var streamAPendingBefore = pendingRestarts.Contains(streamA.Id);
+        var streamBPendingBefore = pendingRestarts.Contains(streamB.Id);
+        var sessionType = DesktopType("FfmpegPlaybackSession");
+        object? sessionA = null;
+        object? sessionB = null;
+        object? replacementSessionB = null;
+        object? cancelledRestartSessionB = null;
+
+        try
+        {
+            if (!originalStartButtonEnabled || originalStartInFlight)
+            {
+                throw new InvalidOperationException("Start button must be idle and enabled before the concurrency smoke.");
+            }
+
+            foreach (var stream in activeStreams)
+            {
+                stream.Enabled = false;
+            }
+
+            ConfigureOfflinePlaybackStream(streamA, 19101);
+            ConfigureOfflinePlaybackStream(streamB, 19102);
+            sessionA = CreateFfmpegSession(sessionType, "ffmpeg", streamA.InputUrl, streamA.InputProtocol);
+            sessionB = CreateFfmpegSession(sessionType, "ffmpeg", streamB.InputUrl, streamB.InputProtocol);
+            Field(sessionA, "_state").SetValue(sessionA, "playing");
+            Field(sessionB, "_state").SetValue(sessionB, "playing");
+            var playingSnapshotA = CreatePlaybackSnapshot("playing", displayedPictures: 12);
+            var playingSnapshotB = CreatePlaybackSnapshot("playing", displayedPictures: 12);
+            ffmpegSessions[streamA.Id] = sessionA;
+            ffmpegSessions[streamB.Id] = sessionB;
+            playbackSnapshots[streamA.Id] = playingSnapshotA;
+            playbackSnapshots[streamB.Id] = playingSnapshotB;
+            lastProgressAt[streamA.Id] = DateTimeOffset.UtcNow;
+            lastProgressAt[streamB.Id] = DateTimeOffset.UtcNow;
+
+            var generationBeforeIndividualStop = operationGenerationField.GetValue(window);
+            Method(typeof(MainWindow), "StopStreamPlayback", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, ["smoke-unrelated-stream", true]);
+            if (!Equals(operationGenerationField.GetValue(window), generationBeforeIndividualStop) ||
+                !ReferenceEquals(ffmpegSessions[streamA.Id], sessionA) ||
+                !ReferenceEquals(ffmpegSessions[streamB.Id], sessionB))
+            {
+                throw new InvalidOperationException("Stopping one stream cancelled or replaced unrelated healthy receiver operations.");
+            }
+
+            startButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            StopWindowTimers(window);
+            if ((bool)startInFlightField.GetValue(window)! ||
+                !startButton.IsEnabled ||
+                !ReferenceEquals(ffmpegSessions[streamA.Id], sessionA) ||
+                !ReferenceEquals(ffmpegSessions[streamB.Id], sessionB))
+            {
+                throw new InvalidOperationException("Repeated Start replaced a healthy FFmpeg session or did not restore its in-flight state.");
+            }
+
+            const string expectedStartSummary = "Starting playback complete: 0 started, 2 skipped, 0 failed.";
+            if (!footer.Text.StartsWith(expectedStartSummary, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Repeated Start did not complete through the button path: footer={footer.Text}");
+            }
+
+            var shouldStartPlayback = Method(typeof(MainWindow), "ShouldStartPlayback", BindingFlags.Instance | BindingFlags.NonPublic);
+            lastProgressAt[streamA.Id] = DateTimeOffset.UtcNow.AddSeconds(-10);
+            if (!(bool)shouldStartPlayback.Invoke(window, [streamA.Id, true])!)
+            {
+                throw new InvalidOperationException("Manual Start did not select an input-stalled playing receiver for retry.");
+            }
+
+            lastProgressAt[streamA.Id] = DateTimeOffset.UtcNow;
+            if ((bool)shouldStartPlayback.Invoke(window, [streamA.Id, true])!)
+            {
+                throw new InvalidOperationException("Manual Start selected a healthy playing receiver for replacement.");
+            }
+
+            var restartAfterCount = restartAfter.Count;
+            var restartAttemptCount = restartAttempts.Count;
+            var pendingRestartCount = pendingRestarts.Count;
+            lastPresentedAt[streamA.Id] = DateTimeOffset.UtcNow.AddSeconds(-10);
+            lastDisplayedPictures[streamA.Id] = 12;
+            if ((bool)Method(typeof(MainWindow), "IsPlaybackVideoFreshForSurface", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .Invoke(window, [streamA, playingSnapshotA])!)
+            {
+                throw new InvalidOperationException("Concurrency smoke did not create a render-stale playing surface.");
+            }
+
+            Method(typeof(MainWindow), "SchedulePlaybackRestartIfNeeded", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, [streamA.Id, playingSnapshotA]);
+            if (restartAfter.Count != restartAfterCount ||
+                restartAttempts.Count != restartAttemptCount ||
+                pendingRestarts.Count != pendingRestartCount ||
+                restartAfter.Contains(streamA.Id) ||
+                restartAttempts.Contains(streamA.Id) ||
+                pendingRestarts.Contains(streamA.Id) ||
+                !ReferenceEquals(ffmpegSessions[streamA.Id], sessionA))
+            {
+                throw new InvalidOperationException("Render staleness incorrectly scheduled a receiver restart while input progress was fresh.");
+            }
+
+            var errorSnapshot = CreatePlaybackSnapshot("error", displayedPictures: 12);
+            playbackSnapshots[streamB.Id] = errorSnapshot;
+            restartAfter[streamB.Id] = DateTimeOffset.UtcNow.AddSeconds(-1);
+            Method(typeof(MainWindow), "SchedulePlaybackRestartIfNeeded", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, [streamB.Id, errorSnapshot]);
+            if (!pendingRestarts.Contains(streamB.Id) || !ReferenceEquals(ffmpegSessions[streamB.Id], sessionB))
+            {
+                throw new InvalidOperationException("Receiver restart was not queued against the expected session owner.");
+            }
+
+            replacementSessionB = CreateFfmpegSession(sessionType, "ffmpeg", streamB.InputUrl, streamB.InputProtocol);
+            Field(replacementSessionB, "_state").SetValue(replacementSessionB, "playing");
+            ffmpegSessions[streamB.Id] = replacementSessionB;
+            Pump(window, 100);
+            StopWindowTimers(window);
+            if (!ReferenceEquals(ffmpegSessions[streamB.Id], replacementSessionB) || pendingRestarts.Contains(streamB.Id))
+            {
+                throw new InvalidOperationException("A queued restart stopped a replacement session owner or did not clear its pending latch.");
+            }
+
+            playbackSnapshots[streamB.Id] = errorSnapshot;
+            ffmpegSessions.Remove(streamB.Id);
+            restartAfter[streamB.Id] = DateTimeOffset.UtcNow.AddSeconds(-1);
+            Func<StreamConfig, System.Threading.Tasks.Task> stalledRestartStarter = stream =>
+            {
+                cancelledRestartSessionB = CreateFfmpegSession(sessionType, "ffmpeg", stream.InputUrl, stream.InputProtocol);
+                Field(cancelledRestartSessionB, "_state").SetValue(cancelledRestartSessionB, "opening");
+                ffmpegSessions[stream.Id] = cancelledRestartSessionB;
+                playbackSnapshots[stream.Id] = CreatePlaybackSnapshot("opening", displayedPictures: 0);
+                return System.Threading.Tasks.Task.CompletedTask;
+            };
+            starterOverrideField.SetValue(window, stalledRestartStarter);
+            lastSlowRefreshField.SetValue(window, DateTimeOffset.MinValue);
+            Method(typeof(MainWindow), "RefreshPlaybackMetadata", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, null);
+            if (!pendingRestarts.Contains(streamB.Id))
+            {
+                throw new InvalidOperationException("The slow refresh did not discover and queue an ownerless failed receiver for backoff retry.");
+            }
+
+            var restartStartDeadline = DateTime.UtcNow.AddSeconds(2);
+            while (!ffmpegSessions.Contains(streamB.Id) && DateTime.UtcNow < restartStartDeadline)
+            {
+                Pump(window, 50);
+            }
+            if (!ffmpegSessions.Contains(streamB.Id))
+            {
+                throw new InvalidOperationException("Ownerless retry did not enter its startup wait before the cancellation check.");
+            }
+
+            Method(typeof(MainWindow), "StopAllPlayback", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, null);
+            var restartCancelDeadline = DateTime.UtcNow.AddSeconds(2);
+            while (pendingRestarts.Contains(streamB.Id) && DateTime.UtcNow < restartCancelDeadline)
+            {
+                Pump(window, 50);
+            }
+            StopWindowTimers(window);
+            if (ffmpegSessions.Contains(streamB.Id) ||
+                pendingRestarts.Contains(streamB.Id) ||
+                restartAfter.Contains(streamB.Id) ||
+                restartAttempts.Contains(streamB.Id))
+            {
+                throw new InvalidOperationException("Explicit Stop did not cancel an ownerless retry already waiting for startup readiness.");
+            }
+            starterOverrideField.SetValue(window, originalStarterOverride);
+
+            playbackSnapshots[streamB.Id] = errorSnapshot;
+            restartAfter[streamB.Id] = DateTimeOffset.UtcNow.AddSeconds(-1);
+            lastSlowRefreshField.SetValue(window, DateTimeOffset.MinValue);
+            Method(typeof(MainWindow), "RefreshPlaybackMetadata", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(window, null);
+            if (!pendingRestarts.Contains(streamB.Id))
+            {
+                throw new InvalidOperationException("Ownerless retry was not queued again after the explicit-stop cancellation check.");
+            }
+
+            ffmpegSessions[streamB.Id] = replacementSessionB;
+            playbackSnapshots[streamB.Id] = playingSnapshotB;
+            Pump(window, 100);
+            StopWindowTimers(window);
+            if (!ReferenceEquals(ffmpegSessions[streamB.Id], replacementSessionB) || pendingRestarts.Contains(streamB.Id))
+            {
+                throw new InvalidOperationException("An ownerless retry request replaced a receiver that appeared before its Dispatcher turn.");
+            }
+
+            Console.WriteLine("playback_concurrency_wiring_smoke_ok streams=2");
+        }
+        finally
+        {
+            StopWindowTimers(window);
+            startInFlightField.SetValue(window, originalStartInFlight);
+            lastSlowRefreshField.SetValue(window, originalLastSlowRefreshAt);
+            operationGenerationField.SetValue(window, originalOperationGeneration);
+            starterOverrideField.SetValue(window, originalStarterOverride);
+            startButton.IsEnabled = originalStartButtonEnabled;
+            stopButton.IsEnabled = originalStopButtonEnabled;
+            footer.Text = originalFooterText;
+            foreach (var stream in activeStreams)
+            {
+                var state = originalStreamStates[stream.Id];
+                stream.Enabled = state.Enabled;
+                stream.InputUrl = state.InputUrl;
+                stream.InputProtocol = state.InputProtocol;
+                stream.AnalysisEnabled = state.AnalysisEnabled;
+                stream.AudioMonitorEnabled = state.AudioMonitorEnabled;
+            }
+
+            foreach (var dictionary in touchedDictionaries)
+            {
+                foreach (var streamId in new[] { streamA.Id, streamB.Id })
+                {
+                    var state = dictionaryStates[dictionary][streamId];
+                    if (state.Exists)
+                    {
+                        dictionary[streamId] = state.Value;
+                    }
+                    else
+                    {
+                        dictionary.Remove(streamId);
+                    }
+                }
+            }
+
+            if (streamAPendingBefore)
+            {
+                pendingRestarts.Add(streamA.Id);
+            }
+            else
+            {
+                pendingRestarts.Remove(streamA.Id);
+            }
+
+            if (streamBPendingBefore)
+            {
+                pendingRestarts.Add(streamB.Id);
+            }
+            else
+            {
+                pendingRestarts.Remove(streamB.Id);
+            }
+
+            DisposeReflective(sessionA);
+            DisposeReflective(sessionB);
+            DisposeReflective(replacementSessionB);
+            DisposeReflective(cancelledRestartSessionB);
+        }
+    }
+
+    private static void ConfigureOfflinePlaybackStream(StreamConfig stream, int port)
+    {
+        stream.Enabled = true;
+        stream.InputUrl = $"srt://127.0.0.1:{port}";
+        stream.InputProtocol = "srt";
+        stream.AnalysisEnabled = false;
+        stream.AudioMonitorEnabled = false;
     }
 
     private static void AssertGpuRenderingUsesLibVlcPlayback(MainWindow window)
@@ -2586,6 +3336,15 @@ internal static class Program
             window?.UpdateLayout();
         }
     }
+
+    private sealed record PlaybackStreamFixtureState(
+        bool Enabled,
+        string InputUrl,
+        string InputProtocol,
+        bool AnalysisEnabled,
+        bool AudioMonitorEnabled);
+
+    private sealed record DictionaryEntryFixtureState(bool Exists, object? Value);
 
     private sealed class WpfAppScope : IDisposable
     {
