@@ -60,13 +60,23 @@ jobs:
       - name: Validate exact graph without mutation
         run: >-
           python scripts/core-runtime/foundation.py dependency
-          --goos linux --goarch amd64 --output "${{ runner.temp }}/core-dependency"
+          --goos linux --goarch amd64 --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-dependency
+      - name: Seal complete output including command logs
+        run: >-
+          python scripts/core-runtime/foundation.py seal --goos linux
+          --goarch amd64 --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-dependency
+      - name: Verify exact sealed upload set (read-only)
+        run: >-
+          python scripts/core-runtime/foundation.py verify-upload --goos linux
+          --goarch amd64 --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-dependency
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
+        if: success()
         with:
           name: core-dependency-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/core-dependency/*.json
+          path: ${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}/core-dependency/
           if-no-files-found: error
+          include-hidden-files: false
+          overwrite: false
           retention-days: 14
   source-and-unit:
     needs: dependency-validation
@@ -98,24 +108,34 @@ jobs:
       - name: Static source analysis (approved packages only)
         run: >-
           python scripts/core-runtime/foundation.py static --goos ${{ matrix.goos }}
-          --goarch amd64 --output "${{ runner.temp }}/core-checks"
+          --goarch amd64 --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-checks
       - name: Unit tests (native host execution)
         run: >-
           python scripts/core-runtime/foundation.py unit --goos ${{ matrix.goos }}
-          --goarch amd64 --output "${{ runner.temp }}/core-checks"
+          --goarch amd64 --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-checks
       - name: Isolated integration tests (separate authorization)
         if: inputs.run_integration && vars.IPMV_CORE_INTEGRATION_ENABLED == 'APPROVED_ISOLATED_NON_GPU'
         env:
           IPMV_INTEGRATION_PERMIT: APPROVED_ISOLATED_NON_GPU
         run: >-
           python scripts/core-runtime/foundation.py integration --goos ${{ matrix.goos }}
-          --goarch amd64 --output "${{ runner.temp }}/core-checks"
+          --goarch amd64 --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-checks
+      - name: Seal complete output including command logs
+        run: >-
+          python scripts/core-runtime/foundation.py seal --goos ${{ matrix.goos }}
+          --goarch amd64 --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-checks
+      - name: Verify exact sealed upload set (read-only)
+        run: >-
+          python scripts/core-runtime/foundation.py verify-upload --goos ${{ matrix.goos }}
+          --goarch amd64 --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-checks
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
+        if: success()
         with:
           name: core-checks-${{ matrix.goos }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/core-checks/*.json
+          path: ${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}/core-checks/
           if-no-files-found: error
+          include-hidden-files: false
+          overwrite: false
           retention-days: 14
   compile-and-evidence:
     needs: source-and-unit
@@ -155,34 +175,44 @@ jobs:
       - name: Verify target dependency graph
         run: >-
           python scripts/core-runtime/foundation.py dependency --goos ${{ matrix.goos }}
-          --goarch ${{ matrix.goarch }} --output "${{ runner.temp }}/core-output"
+          --goarch ${{ matrix.goarch }} --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-output
       - name: Compile assigned non-GPU Core entrypoints
         run: >-
           python scripts/core-runtime/foundation.py build --goos ${{ matrix.goos }}
-          --goarch ${{ matrix.goarch }} --output "${{ runner.temp }}/core-output"
+          --goarch ${{ matrix.goarch }} --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-output
       - name: Generate actual-artifact SBOMs (future)
         run: >-
           python scripts/core-runtime/foundation.py sbom --goos ${{ matrix.goos }}
-          --goarch ${{ matrix.goarch }} --output "${{ runner.temp }}/core-output"
-          --tools "${{ runner.temp }}/core-tools"
+          --goarch ${{ matrix.goarch }} --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-output
+          --tools tools
       - name: License evidence and unresolved scope report
         run: >-
           python scripts/core-runtime/foundation.py license --goos ${{ matrix.goos }}
-          --goarch ${{ matrix.goarch }} --output "${{ runner.temp }}/core-output"
+          --goarch ${{ matrix.goarch }} --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-output
       - name: Scan exact versions (future, no automatic suppression)
         run: >-
           python scripts/core-runtime/foundation.py vulnerability --goos ${{ matrix.goos }}
-          --goarch ${{ matrix.goarch }} --output "${{ runner.temp }}/core-output"
-          --tools "${{ runner.temp }}/core-tools"
+          --goarch ${{ matrix.goarch }} --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-output
+          --tools tools
       - name: Hash and unsigned review evidence
         run: >-
           python scripts/core-runtime/foundation.py evidence --goos ${{ matrix.goos }}
-          --goarch ${{ matrix.goarch }} --output "${{ runner.temp }}/core-output"
+          --goarch ${{ matrix.goarch }} --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-output
+      - name: Seal complete output including command logs
+        run: >-
+          python scripts/core-runtime/foundation.py seal --goos ${{ matrix.goos }}
+          --goarch ${{ matrix.goarch }} --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-output
+      - name: Verify exact sealed upload set (read-only)
+        run: >-
+          python scripts/core-runtime/foundation.py verify-upload --goos ${{ matrix.goos }}
+          --goarch ${{ matrix.goarch }} --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-output
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        if: always()
+        if: success()
         with:
           name: core-candidate-${{ matrix.goos }}-${{ matrix.goarch }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/core-output/
+          path: ${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}/core-output/
           if-no-files-found: error
+          include-hidden-files: false
+          overwrite: false
           retention-days: 14
 # No PR/push/release/schedule/workflow_run trigger, secrets, OIDC, signing, publish or self-hosted.

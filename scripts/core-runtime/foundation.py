@@ -14,6 +14,7 @@ import os
 import pathlib
 import platform
 import re
+import stat
 import subprocess
 import sys
 import tarfile
@@ -41,9 +42,8 @@ def pairs(items):
 
 
 def load(file):
-    with pathlib.Path(file).open(encoding="utf-8") as handle:
-        return json.load(handle, object_pairs_hook=pairs,
-                         parse_constant=lambda value: fail("invalid JSON " + value))
+    return json.loads(read_bytes(file).decode("utf-8"), object_pairs_hook=pairs,
+                      parse_constant=lambda value: fail("invalid JSON " + value))
 
 
 def digest(data):
@@ -51,21 +51,397 @@ def digest(data):
 
 
 def filehash(file):
-    hasher = hashlib.sha256()
-    with pathlib.Path(file).open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            hasher.update(block)
-    return hasher.hexdigest()
+    return stable_file(file)[0]["sha256"]
 
 
 def save(file, value):
-    file = pathlib.Path(file)
-    file.parent.mkdir(parents=True, exist_ok=True)
+    raw = (json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
+    write_bytes(file, raw)
+
+
+# SEC-01: only source reads and a separately designated, private output workspace.
+# The approved builder must exclude concurrent/untrusted writers from OUTPUT_ROOT
+# and its parents (Windows ACL / private runner workspace). These checks detect
+# substitutions, not a compromised OS/administrator or hostile same-token writer.
+OUTPUT_ROOT = None
+OUTPUT = None
+WORKSPACE_CONTEXT = None
+CONTROL_FILES = ("artifact-set.json", "SHA256SUMS")
+
+
+def lexical_path(value, base=None):
+    raw = os.fspath(value)
+    if not isinstance(raw, str) or not raw or any(ord(c) < 32 for c in raw):
+        fail("invalid path text")
+    win = pathlib.PureWindowsPath(raw)
+    if raw.startswith(("//", "\\\\")) or (win.drive and not win.root):
+        fail("UNC/device/drive-relative path rejected")
+    if os.name != "nt" and (win.drive or "\\" in raw):
+        fail("foreign Windows path rejected")
+    if os.name == "nt" and win.root and not win.drive:
+        fail("root-relative Windows path rejected")
+    parts = re.split(r"[/\\]", raw)
+    for i, part in enumerate(parts):
+        if not part or (i == 0 and re.fullmatch(r"[A-Za-z]:", part)):
+            continue
+        if part in (".", "..") or part.casefold() == ".git":
+            fail("dot/traversal/.git path rejected")
+        if part.endswith((" ", ".")) or ":" in part or "~" in part:
+            fail("ambiguous path/ADS/short-name rejected")
+        if re.fullmatch(r"(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", part):
+            fail("reserved Windows path rejected")
+    path = pathlib.Path(raw)
+    if not path.is_absolute():
+        if base is None:
+            fail("explicit absolute root required")
+        path = base / path
+    return pathlib.Path(os.path.abspath(path))
+
+
+def object_id(info):
+    return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode),
+            getattr(info, "st_file_attributes", 0))
+
+
+def file_id(info):
+    return (*object_id(info), info.st_nlink, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+def path_chain(path):
+    result = []
+    for item in (*reversed(path.parents), path):
+        try:
+            info = item.lstat()
+        except FileNotFoundError:
+            break
+        if stat.S_ISLNK(info.st_mode) or (getattr(info, "st_file_attributes", 0) &
+                                         getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+            fail("symlink/junction/reparse point rejected")
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            fail("non-regular filesystem object rejected")
+        if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
+            fail("hard-linked file rejected")
+        result.append((item, object_id(info)))
+    return result
+
+
+def checked_path(value, roots=None, exists=False):
+    path = lexical_path(value)
+    allowed = roots if roots is not None else (REPO, OUTPUT_ROOT)
+    if not any(root is not None and path.is_relative_to(root) for root in allowed):
+        fail("path outside approved repository/output roots")
+    path_chain(path)  # Check existing ancestors even for a not-yet-created output.
+    if WORKSPACE_CONTEXT is not None and path.is_relative_to(OUTPUT_ROOT):
+        if list(object_id(OUTPUT_ROOT.lstat())) != WORKSPACE_CONTEXT["root_identity"]:
+            fail("approved output root instance changed")
+    resolved = path.resolve(strict=exists)
+    if resolved != path or any(p.casefold() == ".git" for p in resolved.parts):
+        fail("path alias/resolved .git reference rejected")
+    if not any(root is not None and resolved.is_relative_to(root) for root in allowed):
+        fail("resolved path escaped approved root")
+    return path
+
+
+def same_chain(before):
+    for path, expected in before:
+        current = path_chain(path)
+        if not current or current[-1] != (path, expected):
+            fail("filesystem parent/instance changed during operation")
+
+
+def relative_path(root, value):
+    # Metadata paths are canonical, portable, relative POSIX paths, never CLI roots.
+    if not isinstance(value, str) or not value or "\\" in value:
+        fail("invalid metadata path")
+    if any(not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", p)
+           for p in value.split("/")):
+        fail("absolute/traversal/hidden/nonportable metadata path rejected")
+    result = checked_path(root / value)
+    if not result.is_relative_to(root) or result == root:
+        fail("metadata path escaped its declared root")
+    return result
+
+
+def stable_file(file, keep_bytes=False):
+    file = checked_path(file, exists=True)
+    parents = path_chain(file.parent)
+    initial = file.lstat()
+    if not stat.S_ISREG(initial.st_mode) or (keep_bytes and initial.st_size > LIMIT):
+        fail("regular bounded input file required")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    hasher, blocks, size = hashlib.sha256(), [], 0
+    with os.fdopen(os.open(file, flags), "rb") as handle:
+        opened = os.fstat(handle.fileno())
+        if file_id(initial) != file_id(opened):
+            fail("input file changed before open")
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            size += len(block)
+            if size > opened.st_size or (keep_bytes and size > LIMIT):
+                fail("input grew during read")
+            hasher.update(block)
+            if keep_bytes:
+                blocks.append(block)
+        if size != opened.st_size or file_id(opened) != file_id(os.fstat(handle.fileno())):
+            fail("input changed during read")
+    same_chain(parents)
+    if file_id(file.lstat()) != file_id(opened):
+        fail("input replaced during read")
+    checked_path(file, exists=True)
+    return {"sha256": hasher.hexdigest(), "size_bytes": str(size)}, b"".join(blocks)
+
+
+def read_bytes(file):
+    return stable_file(file, keep_bytes=True)[1]
+
+
+def ensure_directory(path):
+    path = checked_path(path, roots=(OUTPUT_ROOT,))
+    missing = []
+    ancestor = path
+    while not ancestor.exists():
+        missing.append(ancestor)
+        ancestor = ancestor.parent
+    checked_path(ancestor, roots=(OUTPUT_ROOT,) if ancestor.is_relative_to(OUTPUT_ROOT)
+                 else (OUTPUT_ROOT.parent,), exists=True)
+    for directory in reversed(missing):
+        before = path_chain(directory.parent)
+        directory.mkdir(mode=0o700)
+        same_chain(before)
+        checked_path(directory, roots=(OUTPUT_ROOT,), exists=True)
+    if not path.is_dir():
+        fail("output directory required")
+    return path
+
+
+def seal_path():
+    return OUTPUT_ROOT / ("seal-" + OUTPUT.name + ".json")
+
+
+def writable_path(file):
+    file = checked_path(file, roots=(OUTPUT_ROOT,))
+    if OUTPUT is not None and file.is_relative_to(OUTPUT) and seal_path().exists():
+        fail("sealed output is immutable; start a separately approved new run")
+    ensure_directory(file.parent)
     if file.exists():
         fail("immutable output already exists: " + str(file))
-    with file.open("x", encoding="utf-8", newline="\n") as handle:
-        json.dump(value, handle, ensure_ascii=False, indent=2, allow_nan=False)
-        handle.write("\n")
+    return file
+
+
+def write_bytes(file, raw):
+    file = writable_path(file)
+    parents = path_chain(file.parent)
+    # Private temporary + no-replace hard-link publication; no os.replace overwrite.
+    temp = file.parent / ("pending-" + os.urandom(16).hex())
+    checked_path(temp, roots=(OUTPUT_ROOT,))
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(temp, flags, 0o600), "wb") as handle:
+        handle.write(raw)
+        handle.flush()
+        os.fsync(handle.fileno())
+    same_chain(parents)
+    checked_path(file, roots=(OUTPUT_ROOT,))
+    checked_path(temp, roots=(OUTPUT_ROOT,), exists=True)
+    os.link(temp, file)  # Fails rather than replacing an existing final name.
+    temp.unlink()       # Only our random private temporary name, never caller data.
+    same_chain(parents)
+    if read_bytes(file) != raw:
+        fail("published output identity/content mismatch")
+
+
+def prepare_external(file):
+    file = writable_path(file)
+    return path_chain(file.parent)
+
+
+def finish_external(file, parents):
+    same_chain(parents)
+    return file_ref(OUTPUT_ROOT, file)
+
+
+def file_ref(root, file):
+    file = checked_path(file, exists=True)
+    if not file.is_relative_to(root):
+        fail("reference outside declared root")
+    facts, _ = stable_file(file)
+    return {"path": file.relative_to(root).as_posix(), **facts}
+
+
+def configure_workspace(args, commit):
+    global OUTPUT_ROOT, OUTPUT, WORKSPACE_CONTEXT
+    OUTPUT_ROOT = lexical_path(args.output_root)
+    if OUTPUT_ROOT == OUTPUT_ROOT.parent or OUTPUT_ROOT.is_relative_to(REPO) or REPO.is_relative_to(OUTPUT_ROOT):
+        fail("dedicated output root must be disjoint from source and not a filesystem root")
+    checked_path(REPO, roots=(REPO,), exists=True)
+    checked_path(OUTPUT_ROOT, roots=(OUTPUT_ROOT,))
+    # Only the dedicated leaf may be created; its trusted parent must already exist.
+    if not OUTPUT_ROOT.parent.is_dir():
+        fail("approved private output parent must already exist")
+    args.output = lexical_path(args.output, OUTPUT_ROOT)
+    if args.output.parent != OUTPUT_ROOT or not re.fullmatch(r"[a-z0-9-]+", args.output.name):
+        fail("output must be a named direct child of the dedicated output root")
+    OUTPUT = args.output
+    if args.tools is not None:
+        args.tools = lexical_path(args.tools, OUTPUT_ROOT)
+        if args.tools != OUTPUT_ROOT / "tools" or args.tools == OUTPUT:
+            fail("tool cache must be the separate output-root/tools directory")
+    if OUTPUT.name in ("tools", "workspace"):
+        fail("reserved output name")
+    if not OUTPUT_ROOT.exists():
+        before = path_chain(OUTPUT_ROOT.parent)
+        OUTPUT_ROOT.mkdir(mode=0o700)
+        same_chain(before)
+    checked_path(OUTPUT_ROOT, roots=(OUTPUT_ROOT,), exists=True)
+    if os.name != "nt":
+        info = OUTPUT_ROOT.stat()
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            fail("output root must be private to the approved builder")
+    WORKSPACE_CONTEXT = {"schema": "ipmv.core.output-workspace.v1", "root": str(OUTPUT_ROOT),
+                         "root_identity": list(object_id(OUTPUT_ROOT.stat())),
+                         "repository": str(REPO), "commit": commit,
+                         "goos": args.goos, "goarch": args.goarch,
+                         "run_id": os.environ.get("GITHUB_RUN_ID"),
+                         "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT")}
+    marker = OUTPUT_ROOT / "workspace.json"
+    if marker.exists():
+        if load(marker) != WORKSPACE_CONTEXT:
+            fail("output workspace belongs to a different source/run/instance")
+    else:
+        if any(OUTPUT_ROOT.iterdir()):
+            fail("unregistered output root must be empty; never adopt existing files")
+        save(marker, WORKSPACE_CONTEXT)
+    ensure_directory(OUTPUT)
+
+
+def artifact_records(args, record):
+    if record.get("actual_build") is not True or record.get("goos") != args.goos or record.get("goarch") != args.goarch:
+        fail("matching actual build record required")
+    items = record.get("artifacts")
+    if not isinstance(items, list) or not items:
+        fail("nonempty artifact set required")
+    seen = set()
+    for item in items:
+        ident = item.get("id")
+        if not isinstance(ident, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", ident) or ident in seen:
+            fail("invalid/duplicate artifact identity")
+        seen.add(ident)
+        expected = "artifacts/" + ident + "." + args.goos + "-" + args.goarch + (".exe" if args.goos == "windows" else "")
+        binary = relative_path(args.output, item.get("path"))
+        if item["path"] != expected:
+            fail("artifact path does not match identity/platform")
+        current = file_ref(args.output, binary)
+        if current != {k: item.get(k) for k in ("path", "sha256", "size_bytes")}:
+            fail("artifact path/size/hash changed")
+    return items
+
+
+def output_files(args):
+    files = []
+    def visit(directory):
+        checked_path(directory, roots=(OUTPUT_ROOT,), exists=True)
+        for child in sorted(directory.iterdir()):
+            relative_path(args.output, child.relative_to(args.output).as_posix())
+            info = child.lstat()
+            if stat.S_ISDIR(info.st_mode):
+                visit(child)
+            elif stat.S_ISREG(info.st_mode):
+                files.append(child.relative_to(args.output).as_posix())
+            else:
+                fail("non-regular upload member")
+    visit(args.output)
+    if len({x.casefold() for x in files}) != len(files):
+        fail("duplicate/case-colliding upload paths")
+    return sorted(files)
+
+
+def expected_payload(args):
+    names = {"commands-seal.json"}
+    if (args.output / "build-record.json").exists():
+        record = load(args.output / "build-record.json")
+        items = artifact_records(args, record)
+        names.update({"dependency-validation.json", "build-record.json", "sbom-generation.json",
+                      "license-report.json", "security-evaluation.json", "osv-scanner.json",
+                      "osv-module-results.json", "build-evidence-index.json"})
+        names.update("commands-" + stage + ".json" for stage in
+                     ("dependency", "build", "sbom", "license", "vulnerability", "evidence"))
+        for item in items:
+            names.add(item["path"])
+            names.update(item["id"] + suffix for suffix in (".cdx.json", ".spdx.json"))
+        index = load(args.output / "build-evidence-index.json")
+        if index.get("commit") != WORKSPACE_CONTEXT["commit"] or index.get("artifacts") != [
+                {**item, "sbom_refs": [file_ref(args.output, relative_path(args.output, item["id"] + suffix))
+                                       for suffix in (".cdx.json", ".spdx.json")]} for item in items]:
+            fail("evidence index does not match actual artifacts/SBOMs")
+        required_reports = {"dependency-validation.json", "build-record.json", "sbom-generation.json",
+                            "license-report.json", "security-evaluation.json"}
+        if set(index.get("reports", {})) != required_reports:
+            fail("unexpected evidence report set")
+        for name, ref in index["reports"].items():
+            if ref != file_ref(args.output, relative_path(args.output, name)):
+                fail("evidence report path/size/hash mismatch")
+    elif (args.output / "static-result.json").exists():
+        stages = ["static", "unit"]
+        if (args.output / "integration-result.json").exists():
+            stages.append("integration")
+        names.update(stage + "-result.json" for stage in stages)
+        names.update("commands-" + stage + ".json" for stage in stages)
+    else:
+        names.update({"dependency-validation.json", "commands-dependency.json"})
+    return sorted(names)
+
+
+def seal_output(args, lock, commit):
+    # SEC-02: all commands (including commands-seal.json) have finished before here.
+    payload = expected_payload(args)
+    if output_files(args) != payload:
+        fail("final output set differs from the explicit payload policy")
+    refs = [file_ref(args.output, relative_path(args.output, name)) for name in payload]
+    if refs != [file_ref(args.output, relative_path(args.output, name)) for name in output_files(args)]:
+        fail("payload changed while freezing the final set")
+    manifest = {"schema": "ipmv.core.artifact-set.v1", "status": "SEALED_UNSIGNED_CANDIDATE",
+                "commit": commit, "dependency_set_digest": lock["dependency_set_digest"],
+                "output": args.output.name, "payload": refs,
+                "upload_control_files": list(CONTROL_FILES),
+                "checksum_exclusions": list(CONTROL_FILES),
+                "exclusion_reason": "Explicit self-reference control files; anchored by an outside-bundle seal receipt. No other upload exclusions."}
+    save(args.output / CONTROL_FILES[0], manifest)
+    sums = "".join(ref["sha256"] + "  " + ref["path"] + "\n" for ref in refs)
+    write_bytes(args.output / "SHA256SUMS", sums.encode("utf-8"))
+    save(seal_path(), {"schema": "ipmv.core.output-seal.v1", "workspace": WORKSPACE_CONTEXT,
+                       "output": args.output.name, "payload": refs,
+                       "controls": [file_ref(args.output, args.output / name) for name in CONTROL_FILES]})
+    verify_upload(args, lock, commit)
+
+
+def verify_upload(args, lock, commit):
+    # Read-only, no command-log file is emitted into the sealed upload directory.
+    seal = load(seal_path())
+    manifest = load(args.output / CONTROL_FILES[0])
+    if seal.get("workspace") != WORKSPACE_CONTEXT or seal.get("output") != args.output.name:
+        fail("seal belongs to a different workspace/run")
+    if manifest.get("commit") != commit or manifest.get("dependency_set_digest") != lock["dependency_set_digest"]:
+        fail("manifest source/dependency mismatch")
+    if manifest.get("status") != "SEALED_UNSIGNED_CANDIDATE" or manifest.get("output") != args.output.name:
+        fail("incomplete or mismatched artifact manifest")
+    payload = expected_payload(args)
+    refs = [file_ref(args.output, relative_path(args.output, name)) for name in payload]
+    if manifest.get("payload") != refs or seal.get("payload") != refs:
+        fail("payload existence/path/size/SHA-256/manifest mismatch")
+    if manifest.get("upload_control_files") != list(CONTROL_FILES) or manifest.get("checksum_exclusions") != list(CONTROL_FILES):
+        fail("unknown checksum exclusion policy")
+    if output_files(args) != sorted(payload + list(CONTROL_FILES)):
+        fail("upload set differs from manifest/checksum set plus explicit controls")
+    controls = [file_ref(args.output, args.output / name) for name in CONTROL_FILES]
+    if seal.get("controls") != controls:
+        fail("manifest/checksum control bytes changed after sealing")
+    expected_sums = "".join(ref["sha256"] + "  " + ref["path"] + "\n" for ref in refs).encode("utf-8")
+    if read_bytes(args.output / "SHA256SUMS") != expected_sums:
+        fail("SHA256SUMS membership/hash mismatch")
+    # A second complete pass detects changes during verification. Private workspace
+    # ownership must exclude writers until the following pinned upload action ends.
+    if refs != [file_ref(args.output, relative_path(args.output, name)) for name in payload] or controls != [
+            file_ref(args.output, args.output / name) for name in CONTROL_FILES] or output_files(args) != sorted(payload + list(CONTROL_FILES)):
+        fail("sealed upload changed during final verification")
 
 
 def command(args, env=None, accepted=(0,)):
@@ -109,7 +485,7 @@ def lockcheck():
             fail(name + " differs; request dependency review, do not regenerate")
     if (REPO / "go.work").exists() or (REPO / "vendor").exists():
         fail("workspace/vendor requires explicit separate adoption")
-    text = (REPO / "go.mod").read_text(encoding="utf-8")
+    text = read_bytes(REPO / "go.mod").decode("utf-8")
     if re.search(r"(?m)^\s*(replace|exclude)\b", text):
         fail("replace/exclude rejected by dependency policy")
     if not re.search(r"(?m)^go 1\.26\.5$", text):
@@ -189,7 +565,7 @@ def packages(profile, key):
             fail("unbounded package selection rejected")
         if any(x in value for x in ("desktop-windows", "renewal-poc")):
             fail("Media/Desktop/PoC target rejected")
-        destination = (REPO / value).resolve()
+        destination = checked_path(REPO / value, roots=(REPO,), exists=True)
         if not destination.is_relative_to(REPO) or not destination.is_dir():
             fail("package path does not exist inside repository")
     return values
@@ -224,17 +600,18 @@ def build(args, lock, commit):
     start = dt.datetime.now(dt.timezone.utc).isoformat()
     for target in selected:
         ident = target["id"]
-        if not re.fullmatch(r"[a-z0-9-]+", ident):
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", ident):
             fail("invalid artifact identifier")
         pkgs = packages({"target": [target["package"]]}, "target")
         binary = args.output / "artifacts" / (ident + ("." + args.goos + "-" + args.goarch) +
                                                (".exe" if args.goos == "windows" else ""))
-        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary_parents = prepare_external(binary)
         if binary.exists():
             fail("refuse artifact replacement")
         argv = [args.go, "build", "-mod=readonly", "-trimpath", "-buildvcs=false",
                 "-ldflags=-buildid=", "-o", binary, pkgs[0]]
         command(argv, env=env)
+        finish_external(binary, binary_parents)
         metadata = command([args.go, "version", "-m", binary], env=env).stdout
         records.append({"id": ident, "artifact_kind": target["artifact_kind"],
                         "path": binary.relative_to(args.output).as_posix(),
@@ -274,7 +651,7 @@ def tool_path(tool_id, args):
     if asset is None or not asset["sha256"]:
         fail("no verified official tool asset")
     directory = args.tools / tool_id / tool["version"]
-    directory.mkdir(parents=True, exist_ok=True)
+    ensure_directory(directory)
     archive = directory / asset["file_name"]
     if not archive.exists():
         request = urllib.request.Request(asset["url"], headers={"User-Agent": "IPMV-approved-core-ci"})
@@ -282,21 +659,20 @@ def tool_path(tool_id, args):
             raw = response.read(LIMIT + 1)
         if len(raw) > LIMIT or digest(raw) != asset["sha256"]:
             fail("official tool asset size/hash mismatch")
-        with archive.open("xb") as handle:
-            handle.write(raw)
+        write_bytes(archive, raw)
     if filehash(archive) != asset["sha256"]:
         fail("tool cache hash mismatch")
     binary = directory / (tool_id + (".exe" if host_os == "windows" else ""))
     if tool_id == "syft":
         if archive.suffix == ".zip":
-            with zipfile.ZipFile(archive) as bundle:
+            with zipfile.ZipFile(io.BytesIO(read_bytes(archive))) as bundle:
                 entries = [i for i in bundle.infolist()
                            if pathlib.PurePosixPath(i.filename).name == binary.name]
                 if len(entries) != 1 or entries[0].file_size > LIMIT:
                     fail("ambiguous tool archive")
                 raw = bundle.read(entries[0])
         else:
-            with tarfile.open(archive, "r:gz") as bundle:
+            with tarfile.open(fileobj=io.BytesIO(read_bytes(archive)), mode="r:gz") as bundle:
                 entries = [i for i in bundle.getmembers()
                            if pathlib.PurePosixPath(i.name).name == binary.name and i.isfile()]
                 if len(entries) != 1 or entries[0].size > LIMIT:
@@ -306,13 +682,12 @@ def tool_path(tool_id, args):
                     fail("missing tool entry")
                 raw = stream.read(LIMIT + 1)
     else:
-        raw = archive.read_bytes()
+        raw = read_bytes(archive)
     if binary.exists():
         if filehash(binary) != digest(raw):
             fail("extracted tool modified")
     else:
-        with binary.open("xb") as handle:
-            handle.write(raw)
+        write_bytes(binary, raw)
         if host_os != "windows":
             binary.chmod(0o700)
     return binary
@@ -323,16 +698,17 @@ def sbom(args):
     if record["actual_build"] is not True:
         fail("actual artifact required; no synthetic SBOM")
     syft = tool_path("syft", args)
-    for artifact in record["artifacts"]:
-        binary = args.output / artifact["path"]
+    for artifact in artifact_records(args, record):
+        binary = relative_path(args.output, artifact["path"])
         if filehash(binary) != artifact["sha256"]:
             fail("artifact changed before SBOM")
         stem = artifact["id"]
         outputs = [args.output / (stem + ".cdx.json"), args.output / (stem + ".spdx.json")]
-        if any(file.exists() for file in outputs):
-            fail("do not replace SBOM revision")
+        output_parents = [prepare_external(file) for file in outputs]
         command([syft, "scan", binary, "-o", "cyclonedx-json@1.6=" + str(outputs[0]),
                  "-o", "spdx-json@2.3=" + str(outputs[1])])
+        for file, parents in zip(outputs, output_parents):
+            finish_external(file, parents)
         cdx, spdx = load(outputs[0]), load(outputs[1])
         if cdx.get("specVersion") != "1.6" or spdx.get("spdxVersion") != "SPDX-2.3":
             fail("SBOM format drift")
@@ -404,8 +780,8 @@ def evidence(args, lock, commit):
         refs[name] = {"path": name, "sha256": filehash(file),
                       "size_bytes": str(file.stat().st_size)}
     artifacts = []
-    for item in build_record["artifacts"]:
-        binary = args.output / item["path"]
+    for item in artifact_records(args, build_record):
+        binary = relative_path(args.output, item["path"])
         if filehash(binary) != item["sha256"]:
             fail("artifact replaced; regenerate/re-attest all dependent evidence")
         sboms = []
@@ -422,54 +798,60 @@ def evidence(args, lock, commit):
               "compatibility_approved": False, "security_revision_approved": False,
               "reason": "Not a D15-A06 Release Manifest; protected attestation, license/security closure and signing pending"}
     save(args.output / "build-evidence-index.json", result)
-    # This checksum list may be the subject of a later same-build protected attestation.
-    files = sorted(p for p in args.output.rglob("*")
-                   if p.is_file() and p.name != "SHA256SUMS" and "tools" not in p.parts)
-    with (args.output / "SHA256SUMS").open("x", encoding="utf-8", newline="\n") as handle:
-        for file in files:
-            handle.write(filehash(file) + "  " + file.relative_to(args.output).as_posix() + "\n")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("stage", choices=["dependency", "static", "unit", "integration",
-                                          "build", "sbom", "license", "vulnerability", "evidence"])
-    parser.add_argument("--output", required=True, type=pathlib.Path)
-    parser.add_argument("--tools", type=pathlib.Path)
+                                          "build", "sbom", "license", "vulnerability", "evidence",
+                                          "seal", "verify-upload"])
+    parser.add_argument("--output-root", default=os.environ.get("IPMV_CORE_OUTPUT_ROOT"),
+                        required=not os.environ.get("IPMV_CORE_OUTPUT_ROOT"))
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--tools")
     parser.add_argument("--go", default="go")
     parser.add_argument("--goos", choices=["windows", "linux"], required=True)
     parser.add_argument("--goarch", choices=["amd64", "arm64"], required=True)
     args = parser.parse_args()
-    args.output = args.output.resolve()
-    if args.output == REPO or args.output in REPO.parents or args.output.is_relative_to(CONFIG):
-        fail("unsafe output directory")
-    if args.tools is not None:
-        args.tools = args.tools.resolve()
-        if args.tools.is_relative_to(REPO):
-            fail("tools must be outside source repository")
     commit = guarded()
+    configure_workspace(args, commit)
     lock = lockcheck()
-    before = (filehash(REPO / "go.mod"), filehash(REPO / "go.sum"))
+    if args.stage != "verify-upload" and seal_path().exists():
+        fail("sealed output cannot be reopened for mutation")
+    # Serialize cooperating stages; stale tickets fail closed, never auto-delete.
+    stage_lock = checked_path(OUTPUT_ROOT / "stage.lock", roots=(OUTPUT_ROOT,))
+    ticket = os.urandom(32)
+    write_bytes(stage_lock, ticket)
     try:
-        if args.stage == "dependency":
-            dependency(args, lock)
-        elif args.stage in ("static", "unit", "integration"):
-            analysis_or_tests(args)
-        elif args.stage == "build":
-            build(args, lock, commit)
-        elif args.stage in ("sbom", "vulnerability"):
-            if args.tools is None:
-                fail("explicit outside-repository tools directory required")
-            (sbom if args.stage == "sbom" else lambda a: vulnerability(a, lock))(args)
-        elif args.stage == "license":
-            license_report(args, lock)
-        else:
-            evidence(args, lock, commit)
+        before = (filehash(REPO / "go.mod"), filehash(REPO / "go.sum"))
+        try:
+            if args.stage == "dependency":
+                dependency(args, lock)
+            elif args.stage in ("static", "unit", "integration"):
+                analysis_or_tests(args)
+            elif args.stage == "build":
+                build(args, lock, commit)
+            elif args.stage in ("sbom", "vulnerability"):
+                if args.tools is None:
+                    fail("explicit output-root/tools cache required")
+                (sbom if args.stage == "sbom" else lambda a: vulnerability(a, lock))(args)
+            elif args.stage == "license":
+                license_report(args, lock)
+            elif args.stage == "evidence":
+                evidence(args, lock, commit)
+            elif args.stage == "verify-upload":
+                verify_upload(args, lock, commit)
+        finally:
+            if before != (filehash(REPO / "go.mod"), filehash(REPO / "go.sum")):
+                fail("unexpected dependency file mutation; stop without restoration")
+            if args.stage != "verify-upload" and COMMAND_LOG:
+                save(args.output / ("commands-" + args.stage + ".json"), COMMAND_LOG)
+        if args.stage == "seal":
+            seal_output(args, lock, commit)
     finally:
-        if before != (filehash(REPO / "go.mod"), filehash(REPO / "go.sum")):
-            fail("unexpected dependency file mutation; stop without restoration")
-        if COMMAND_LOG:
-            save(args.output / ("commands-" + args.stage + ".json"), COMMAND_LOG)
+        if read_bytes(stage_lock) != ticket:
+            fail("stage lock changed; leave it untouched and stop")
+        stage_lock.unlink()  # Our verified ticket only, outside the upload directory.
 
 
 if __name__ == "__main__":
