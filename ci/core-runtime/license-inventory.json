@@ -1,0 +1,1063 @@
+{
+  "schema": "ipmv.core.license-inventory.v1",
+  "status": "STATIC_SOURCE_INVENTORY_NOT_DISTRIBUTION_CLEARANCE",
+  "baseline_digest": "84a448d4c55d170970692c508308b01c263f9b14659f6597483356fc9695ad40",
+  "module_count": 26,
+  "module_license_files_found": 25,
+  "first_party_license_unknown": true,
+  "modules": [
+    {
+      "module": "github.com/dustin/go-humanize",
+      "version": "v1.1.0",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "MIT",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "a973b4498c13eb74baa2a8e5c351426a6826f2fcdd909916dbe53ee2e755fd71",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2005-2008  Dustin Sallings <dustin@spy.net>"
+      ],
+      "redistribution": "Include copyright and permission notice in copies/substantial portions",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "PACKAGE_SELECTED_NOT_BINARY_CONFIRMED",
+      "additional_material": []
+    },
+    {
+      "module": "github.com/example/ip-multiviewer",
+      "version": null,
+      "dependency_scope": "FIRST_PARTY",
+      "root_spdx_id": "NOASSERTION",
+      "root_identifier_text_check": "UNKNOWN_NO_PROJECT_LICENSE_FILE",
+      "all_files_expression": null,
+      "policy": "UNKNOWN",
+      "root_license_file": null,
+      "license_evidence": [],
+      "copyright_notices": [],
+      "redistribution": "Owner distribution authorization/terms required; no open-source license invented",
+      "notice_requirement": "OWNER_DECISION_PENDING",
+      "source_disclosure": "UNKNOWN_OWNER_POLICY",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "FIRST_PARTY_ROOT_PACKAGES_SELECTED_NOT_BINARY_CONFIRMED",
+      "additional_material": []
+    },
+    {
+      "module": "github.com/google/pprof",
+      "version": "v0.0.0-20261016150608-1facf8f91b50",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "Apache-2.0",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "AUTHORS",
+          "sha256": "8a196dfd9252ad9cb0670365e680d6b19560c688776fa76f0203854ae2c0e29c",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "third_party/svgpan/LICENSE",
+          "sha256": "154c946c17de61ca71d28e13673d76a5798e6e25995a7397fbae157afc8f62b4",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "copyright notice that is included in or attached to the work",
+        "copyright license to reproduce, prepare Derivative Works of,",
+        "Copyright [yyyy] [name of copyright owner]",
+        "Copyright 2009-2017 Andrea Leofreddi <a.leofreddi@vleo.net>. All rights reserved."
+      ],
+      "redistribution": "Include license, preserve applicable notices; carry upstream NOTICE if applicable, mark modified files; patent/termination clauses apply",
+      "notice_requirement": "Inspect embedded NOTICE and attribution; no root NOTICE found",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": [
+        {
+          "path": "third_party/svgpan/LICENSE",
+          "sha256": "154c946c17de61ca71d28e13673d76a5798e6e25995a7397fbae157afc8f62b4",
+          "scope": "FILE_OR_EMBEDDED_NOTICE_REQUIRES_SCOPE_MAPPING"
+        }
+      ]
+    },
+    {
+      "module": "github.com/google/uuid",
+      "version": "v1.6.0",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "0a8d61ed3cbfd5312326e8126c31ce9c627a283adc99131b56896d29ada04b2d",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2009,2014 Google Inc. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": []
+    },
+    {
+      "module": "github.com/hashicorp/golang-lru/v2",
+      "version": "v2.0.7",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "MPL-2.0",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "REVIEW_REQUIRED",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "6c7088eb877b5d7e6e0e9d27e822ea25fcda2e83f9eba59bb5f1418a656796e0",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "simplelru/LICENSE_list",
+          "sha256": "6d462371baa8649492b06f51f154dba9b25d2ac9548369b8b4fdbbbb85f2f75d",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2014 HashiCorp, Inc.",
+        "Copyright (c) 2009 The Go Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer"
+      ],
+      "redistribution": "Covered files in source form under MPL 2.0; when distributing executable inform recipients how to obtain covered source; larger-work terms remain separate",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "MPL-covered source (including modifications if any) if actually distributed; full product source not inferred",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": [
+        {
+          "path": "simplelru/LICENSE_list",
+          "sha256": "6d462371baa8649492b06f51f154dba9b25d2ac9548369b8b4fdbbbb85f2f75d",
+          "scope": "FILE_OR_EMBEDDED_NOTICE_REQUIRES_SCOPE_MAPPING"
+        }
+      ]
+    },
+    {
+      "module": "github.com/mattn/go-isatty",
+      "version": "v0.0.24",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "MIT",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "08eab1118c80885fa1fa6a6dd7303f65a379fcb3733e063d20d1bbc2c76e6fa1",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) Yasuhiro MATSUMOTO <mattn.jp@gmail.com>"
+      ],
+      "redistribution": "Include copyright and permission notice in copies/substantial portions",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "PACKAGE_SELECTED_NOT_BINARY_CONFIRMED",
+      "additional_material": []
+    },
+    {
+      "module": "github.com/ncruces/go-strftime",
+      "version": "v1.1.0",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "MIT",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "38ae43959daf953a393a585b2988672cb65a5a541aca0d0be5e72595a0a16883",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2022 Nuno Cruces"
+      ],
+      "redistribution": "Include copyright and permission notice in copies/substantial portions",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "PACKAGE_SELECTED_NOT_BINARY_CONFIRMED",
+      "additional_material": []
+    },
+    {
+      "module": "github.com/remyoudompheng/bigfft",
+      "version": "v0.0.0-20230129092748-24d4a6f8daec",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "dd26a7abddd02e2d0aba97805b31f248ef7835d9e10da289b22e3b8ab78b324d",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2012 The Go Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "PACKAGE_SELECTED_NOT_BINARY_CONFIRMED",
+      "additional_material": []
+    },
+    {
+      "module": "golang.org/x/mod",
+      "version": "v0.42.0",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright 2009 The Go Authors.",
+        "copyright notice, this list of conditions and the following disclaimer"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": []
+    },
+    {
+      "module": "golang.org/x/sync",
+      "version": "v0.24.0",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright 2009 The Go Authors.",
+        "copyright notice, this list of conditions and the following disclaimer"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": []
+    },
+    {
+      "module": "golang.org/x/sys",
+      "version": "v0.49.0",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright 2009 The Go Authors.",
+        "copyright notice, this list of conditions and the following disclaimer"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "PACKAGE_SELECTED_NOT_BINARY_CONFIRMED",
+      "additional_material": []
+    },
+    {
+      "module": "golang.org/x/tools",
+      "version": "v0.52.0",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright 2009 The Go Authors.",
+        "copyright notice, this list of conditions and the following disclaimer"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": []
+    },
+    {
+      "module": "modernc.org/cc/v4",
+      "version": "v4.30.6-0.20261101114202-1b9d1a076f6b",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "1c77905db36f407e0fdb513f97f1f2a3f2282049ca273637841face982d5d003",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "testdata/jhjourdan/LICENSE",
+          "sha256": "f4e673d9ef995ee5da2c7a08e5ad9aea5d899be917618b7367c3a748c53b6c63",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2014 The CC Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer",
+        "Copyright (c) 2016-2017, Inria"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": [
+        {
+          "path": "testdata/jhjourdan/LICENSE",
+          "sha256": "f4e673d9ef995ee5da2c7a08e5ad9aea5d899be917618b7367c3a748c53b6c63",
+          "scope": "TESTDATA_NOT_DISTRIBUTION_APPROVED"
+        }
+      ]
+    },
+    {
+      "module": "modernc.org/ccgo/v4",
+      "version": "v4.38.1",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "343748b20da2ceb739c1ab7b85fe16f6fe4b67fad88fea40c5835a08383d8ffe",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2017 The CCGO Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": []
+    },
+    {
+      "module": "modernc.org/fileutil",
+      "version": "v1.4.0",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "AUTHORS",
+          "sha256": "4d6b1a3d39cf902d150fb1b4999c6386dbb7f9967179dbc1b8bb34188569fd2e",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "7dc07397727fc500d5ce768d724e4d555eee8fb7687f421fd40d72249868b0ca",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "falloc/LICENSE",
+          "sha256": "078134734db24112b59bcfd4ce3462e2d167471e5a11a69911785e881fc92c86",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "hdb/LICENSE",
+          "sha256": "078134734db24112b59bcfd4ce3462e2d167471e5a11a69911785e881fc92c86",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "storage/LICENSE",
+          "sha256": "078134734db24112b59bcfd4ce3462e2d167471e5a11a69911785e881fc92c86",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2014 The fileutil Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer",
+        "Copyright (c) 2011 CZ.NIC z.s.p.o. All rights reserved."
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": [
+        {
+          "path": "falloc/LICENSE",
+          "sha256": "078134734db24112b59bcfd4ce3462e2d167471e5a11a69911785e881fc92c86",
+          "scope": "FILE_OR_EMBEDDED_NOTICE_REQUIRES_SCOPE_MAPPING"
+        },
+        {
+          "path": "hdb/LICENSE",
+          "sha256": "078134734db24112b59bcfd4ce3462e2d167471e5a11a69911785e881fc92c86",
+          "scope": "FILE_OR_EMBEDDED_NOTICE_REQUIRES_SCOPE_MAPPING"
+        },
+        {
+          "path": "storage/LICENSE",
+          "sha256": "078134734db24112b59bcfd4ce3462e2d167471e5a11a69911785e881fc92c86",
+          "scope": "FILE_OR_EMBEDDED_NOTICE_REQUIRES_SCOPE_MAPPING"
+        }
+      ]
+    },
+    {
+      "module": "modernc.org/gc/v2",
+      "version": "v2.6.5",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "4719790df5e9d33b1cef3a67df8264fb1e3e7f54f3ca900c562e84a951de62d9",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2016 The GC Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer",
+        "Copyright (c) 2009 The Go Authors. All rights reserved."
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": []
+    },
+    {
+      "module": "modernc.org/gc/v3",
+      "version": "v3.2.0",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "4719790df5e9d33b1cef3a67df8264fb1e3e7f54f3ca900c562e84a951de62d9",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "GO-LICENSE",
+          "sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2016 The GC Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer",
+        "Copyright (c) 2009 The Go Authors. All rights reserved."
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": [
+        {
+          "path": "GO-LICENSE",
+          "sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+          "scope": "FILE_OR_EMBEDDED_NOTICE_REQUIRES_SCOPE_MAPPING"
+        }
+      ]
+    },
+    {
+      "module": "modernc.org/goabi0",
+      "version": "v0.2.0",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "AUTHORS",
+          "sha256": "f79ff8b413938c3ce7c60db12242a663d8e840249bd838fcf58f4aaccfec5454",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "6d33428c98f9d7113dfc86e17fca00f81aeaac33e02f79c8a5afafb0a5fd33c6",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2025 The goabi0 Authors. All rights reserved."
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": []
+    },
+    {
+      "module": "modernc.org/libc",
+      "version": "v1.80.1",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "REVIEW_REQUIRED",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "AUTHORS",
+          "sha256": "40224528f3c7363534f59521d803a4eb627966b334d732bfc68a788655cb2545",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "95ff867eb55a56935fa7492406cfa953fb7c13ca73f4c0a86ae05756b4605600",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE-3RD-PARTY.md",
+          "sha256": "f597097efe3d97021f89170746bd3a0fb9a8b6fb26b82043ed68a4e0283bee6c",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "testdata/nsz.repo.hu/libc-test/COPYRIGHT",
+          "sha256": "41b8f2e2706012eb534f89e72ff547308cb81dcb9acf077c40a9058a7c06088d",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "testdata/nsz.repo.hu/libc-test/src/math/crlibm/COPYING",
+          "sha256": "dcc100d4161cc0b7177545ab6e47216f84857cda3843847c792a25289852dcaa",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2017 The Libc Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer",
+        "Copyright (c) 2009 The Go Authors. All rights reserved.",
+        "Copyright © 2005-2020 Rich Felker, et al.",
+        "Copyright © 1993,2004 Sun Microsystems or",
+        "Copyright © 2003-2011 David Schultz or",
+        "Copyright © 2003-2009 Steven G. Kargl or",
+        "Copyright © 2003-2009 Bruce D. Evans or",
+        "Copyright © 2008 Stephen L. Moshier or",
+        "Copyright © 2017-2018 Arm Limited",
+        "Copyright © 1999-2019, Arm Limited.",
+        "Copyright © 1994 David Burren. It is licensed under a BSD license.",
+        "Copyright (c) 2012 Dominik Honnef",
+        "Copyright (c) 2003-2025 Eelco Dolstra and the Nixpkgs/NixOS contributors",
+        "Copyright © 2005-2013 libc-test AUTHORS",
+        "Copyright (C) 1989, 1991 Free Software Foundation, Inc.",
+        "copyright notice and disclaimer of warranty; keep intact all the",
+        "Copyright (C) 19yy  <name of author>"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "PACKAGE_SELECTED_NOT_BINARY_CONFIRMED",
+      "additional_material": [
+        {
+          "path": "LICENSE-3RD-PARTY.md",
+          "sha256": "f597097efe3d97021f89170746bd3a0fb9a8b6fb26b82043ed68a4e0283bee6c",
+          "scope": "FILE_OR_EMBEDDED_NOTICE_REQUIRES_SCOPE_MAPPING"
+        },
+        {
+          "path": "testdata/nsz.repo.hu/libc-test/COPYRIGHT",
+          "sha256": "41b8f2e2706012eb534f89e72ff547308cb81dcb9acf077c40a9058a7c06088d",
+          "scope": "TESTDATA_NOT_DISTRIBUTION_APPROVED"
+        },
+        {
+          "path": "testdata/nsz.repo.hu/libc-test/src/math/crlibm/COPYING",
+          "sha256": "dcc100d4161cc0b7177545ab6e47216f84857cda3843847c792a25289852dcaa",
+          "scope": "TESTDATA_NOT_DISTRIBUTION_APPROVED"
+        }
+      ]
+    },
+    {
+      "module": "modernc.org/mathutil",
+      "version": "v1.7.1",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "AUTHORS",
+          "sha256": "51fcdd68bb605f080283bb6eabb72452591289650599d3d67603381834e536af",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "bfa9bf72a72ca009fd62a8f84fca3dca67e51d93af96352723646599898b6cf5",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "mersenne/LICENSE",
+          "sha256": "c05630f9ca899ea094620d37daea6ba66f99adbf9268ea5fea9db607e1102bd9",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2014 The mathutil Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer",
+        "Copyright (c) 2014 The mersenne Authors. All rights reserved."
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "PACKAGE_SELECTED_NOT_BINARY_CONFIRMED",
+      "additional_material": [
+        {
+          "path": "mersenne/LICENSE",
+          "sha256": "c05630f9ca899ea094620d37daea6ba66f99adbf9268ea5fea9db607e1102bd9",
+          "scope": "FILE_OR_EMBEDDED_NOTICE_REQUIRES_SCOPE_MAPPING"
+        }
+      ]
+    },
+    {
+      "module": "modernc.org/memory",
+      "version": "v1.12.1",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "AUTHORS",
+          "sha256": "df1f424436f279309de85b82e494d548297a2570e9b5794630d7e72c9eb50b6a",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "59895e669f48f168b6b858358f6005779cdf40a265f7828813061b56af67b496",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE-GO",
+          "sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE-LOGO",
+          "sha256": "5ae5bee3072a841376451b48d8cfcec7188e10543926d5870828d36c8a750dc5",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE-MMAP-GO",
+          "sha256": "c2eba69f20d05414538c3a5df7694dde392e065ff70882e1625e90f5d6659fff",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2017 The Memory Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer",
+        "Copyright (c) 2009 The Go Authors. All rights reserved.",
+        "Copyright (c) 2011, Evan Shaw <edsrzf@gmail.com>"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "PACKAGE_SELECTED_NOT_BINARY_CONFIRMED",
+      "additional_material": [
+        {
+          "path": "LICENSE-GO",
+          "sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+          "scope": "FILE_OR_EMBEDDED_NOTICE_REQUIRES_SCOPE_MAPPING"
+        },
+        {
+          "path": "LICENSE-LOGO",
+          "sha256": "5ae5bee3072a841376451b48d8cfcec7188e10543926d5870828d36c8a750dc5",
+          "scope": "ASSET_UNKNOWN_TERMS"
+        },
+        {
+          "path": "LICENSE-MMAP-GO",
+          "sha256": "c2eba69f20d05414538c3a5df7694dde392e065ff70882e1625e90f5d6659fff",
+          "scope": "FILE_OR_EMBEDDED_NOTICE_REQUIRES_SCOPE_MAPPING"
+        }
+      ]
+    },
+    {
+      "module": "modernc.org/opt",
+      "version": "v0.2.0",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "AUTHORS",
+          "sha256": "f79ff8b413938c3ce7c60db12242a663d8e840249bd838fcf58f4aaccfec5454",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "7a0dd90f1d1c8fa80d03c1806bdd8e4dca7285fae9b4a34f2c4a8a2552fdd77c",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2019 The Opt Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": []
+    },
+    {
+      "module": "modernc.org/sortutil",
+      "version": "v1.2.1",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "AUTHORS",
+          "sha256": "f79ff8b413938c3ce7c60db12242a663d8e840249bd838fcf58f4aaccfec5454",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "7bc9df688c16dd8e64463ec0ad66728730a0e1a70a1dbda3dcbcd8a9b45bfaab",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2014 The sortutil Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": []
+    },
+    {
+      "module": "modernc.org/sqlite",
+      "version": "v1.62.0",
+      "dependency_scope": "DIRECT",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "AUTHORS",
+          "sha256": "86555660d038cc73180fbc221e83ce43ac6624c5b4ce629172e0011df06b321d",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "c6fe05491a60ae13bcd223088d2705e36dede24e5587226231d2459ada5c4822",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE-3RD-PARTY.md",
+          "sha256": "f4a00ade8f4057ab0ea49097d9c459df8559fcf10ca78da0c950343fb7428d37",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE-SQLITE",
+          "sha256": "8438c9c89b849131ead81d5435cb97fcf052df5b0b286dda8a2d4c29e6cb3fd0",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE-SQLITE_VEC",
+          "sha256": "6ce72bbe12d975bd5286e5ab0a064c069693300c47bccbc57bec18485f1621ea",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2017 The Sqlite Authors. All rights reserved.",
+        "Copyright (c) 2005-2008  Dustin Sallings <dustin@spy.net>",
+        "Copyright (c) 2009,2014 Google Inc. All rights reserved.",
+        "Copyright (c) 2015 The Go Authors. All rights reserved.",
+        "Copyright (c) 2012 The Go Authors. All rights reserved.",
+        "Copyright (c) 2009 The Go Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer",
+        "Copyright 2009 The Go Authors.",
+        "Copyright (c) 2014 The CC Authors. All rights reserved.",
+        "Copyright (c) 2017 The CCGO Authors. All rights reserved.",
+        "Copyright (c) 2014 The fileutil Authors. All rights reserved.",
+        "Copyright (c) 2017 The Libc Authors. All rights reserved.",
+        "Copyright (c) 2014 The mathutil Authors. All rights reserved.",
+        "Copyright (c) 2014 The mersenne Authors. All rights reserved.",
+        "Copyright (c) 2017 The Memory Authors. All rights reserved.",
+        "Copyright (c) 2019 The Opt Authors. All rights reserved.",
+        "Copyright (c) 2014 The sortutil Authors. All rights reserved.",
+        "Copyright (c) 2014 The strutil Authors. All rights reserved.",
+        "Copyright (c) 2011, Evan Shaw <edsrzf@gmail.com>",
+        "Copyright (c) 2022 Nuno Cruces",
+        "Copyright (c) 2024 Alex Garcia",
+        "copyright notice that is included in or attached to the work",
+        "copyright license to reproduce, prepare Derivative Works of,",
+        "Copyright [yyyy] [name of copyright owner]",
+        "Copyright 2009-2017 Andrea Leofreddi <a.leofreddi@vleo.net>. All rights reserved.",
+        "Copyright (c) 2011 CZ.NIC z.s.p.o. All rights reserved.",
+        "Copyright (c) 2015 Chzyer",
+        "Copyright (c) 2014 HashiCorp, Inc.",
+        "Copyright (c) Yasuhiro MATSUMOTO <mattn.jp@gmail.com>",
+        "Copyright (c) 2016 The GC Authors. All rights reserved.",
+        "Copyright (c) 2025 The goabi0 Authors. All rights reserved.",
+        "Copyright © 2005-2020 Rich Felker, et al.",
+        "Copyright © 1993,2004 Sun Microsystems or",
+        "Copyright © 2003-2011 David Schultz or",
+        "Copyright © 2003-2009 Steven G. Kargl or",
+        "Copyright © 2003-2009 Bruce D. Evans or",
+        "Copyright © 2008 Stephen L. Moshier or",
+        "Copyright © 2017-2018 Arm Limited",
+        "Copyright © 1999-2019, Arm Limited.",
+        "Copyright © 1994 David Burren. It is licensed under a BSD license.",
+        "Copyright (c) 2012 Dominik Honnef",
+        "Copyright (c) 2003-2025 Eelco Dolstra and the Nixpkgs/NixOS contributors"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "PACKAGE_SELECTED_NOT_BINARY_CONFIRMED",
+      "additional_material": [
+        {
+          "path": "LICENSE-3RD-PARTY.md",
+          "sha256": "f4a00ade8f4057ab0ea49097d9c459df8559fcf10ca78da0c950343fb7428d37",
+          "scope": "FILE_OR_EMBEDDED_NOTICE_REQUIRES_SCOPE_MAPPING"
+        },
+        {
+          "path": "LICENSE-SQLITE",
+          "sha256": "8438c9c89b849131ead81d5435cb97fcf052df5b0b286dda8a2d4c29e6cb3fd0",
+          "scope": "FILE_OR_EMBEDDED_NOTICE_REQUIRES_SCOPE_MAPPING"
+        },
+        {
+          "path": "LICENSE-SQLITE_VEC",
+          "sha256": "6ce72bbe12d975bd5286e5ab0a064c069693300c47bccbc57bec18485f1621ea",
+          "scope": "FILE_OR_EMBEDDED_NOTICE_REQUIRES_SCOPE_MAPPING"
+        }
+      ]
+    },
+    {
+      "module": "modernc.org/strutil",
+      "version": "v1.2.1",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "AUTHORS",
+          "sha256": "7c0fabaec4dff6b1774a7435e772cd38db760d322ddb13027cab715dfe93c1d0",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "0f594b710bedb0335b15155204150cb1aac98e76144b52b852b43ce6a65eaaad",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2014 The strutil Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": []
+    },
+    {
+      "module": "modernc.org/token",
+      "version": "v1.1.0",
+      "dependency_scope": "INDIRECT_SELECTED_GRAPH",
+      "root_spdx_id": "BSD-3-Clause",
+      "root_identifier_text_check": "STATIC_TEXT_CHECKED; identifier corresponds to root license clauses, not all files",
+      "all_files_expression": null,
+      "policy": "ALLOW_WITH_NOTICE",
+      "root_license_file": "LICENSE",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067",
+          "evidence_file": "ci/core-runtime/license-evidence.json"
+        }
+      ],
+      "copyright_notices": [
+        "Copyright (c) 2009 The Go Authors. All rights reserved.",
+        "copyright notice, this list of conditions and the following disclaimer"
+      ],
+      "redistribution": "Retain copyright, conditions, disclaimer in source; reproduce in binary distribution materials; no endorsement",
+      "notice_requirement": "License/copyright attribution required",
+      "source_disclosure": "None from root permissive license; separately assess third-party material",
+      "binary_distribution_status": "NOT_ASSESSED_NO_BUILD_ARTIFACT",
+      "windows_b1_metadata": "NOT_SELECTED_IN_B1_WINDOWS_ROOTS; graph-only or test/generator candidate",
+      "additional_material": []
+    }
+  ],
+  "non_module_components": [
+    {
+      "name": "Go toolchain/runtime",
+      "version": "1.27.4",
+      "root_spdx_id": "BSD-3-Clause",
+      "license_evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+        },
+        {
+          "path": "PATENTS",
+          "sha256": "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc"
+        }
+      ],
+      "vendored_stdlib_source_closure": "ADDITIONAL_FILE_TERMS_TO_RECONCILE_PER_ARTIFACT"
+    },
+    {
+      "name": "SQLite engine",
+      "version": "3.54.1",
+      "spdx_expression": "LicenseRef-SQLite-Public-Domain",
+      "evidence": "8438c9c89b849131ead81d5435cb97fcf052df5b0b286dda8a2d4c29e6cb3fd0",
+      "scope": "documented transpiled engine; not runtime-confirmed; wrapper BSD remains applicable"
+    },
+    {
+      "name": "SQLite vec",
+      "spdx_expression": "MIT",
+      "scope": "module contains vec subpackage; inclusion not assumed"
+    },
+    {
+      "name": "libc math crlibm test data",
+      "spdx_expression": "NOASSERTION",
+      "observed_license_text": "GPL version 2 text; only/or-later must follow per-file grant, not generic COPYING appendix",
+      "scope": "testdata only, not selected in retained Windows metadata; no fixture/source bundle distribution authorized",
+      "policy": "RESTRICTED_IF_INCLUDED; inspect before distribution"
+    },
+    {
+      "name": "memory logo",
+      "spdx_expression": "NOASSERTION",
+      "scope": "LICENSE-LOGO only links origin, reuse not granted",
+      "policy": "UNKNOWN_EXCLUDE_FROM_DISTRIBUTION"
+    },
+    {
+      "name": "SDK / Media / GPU / native additions",
+      "spdx_expression": "NOASSERTION",
+      "scope": "not selected by this task; inventory and approval before introducing"
+    }
+  ],
+  "special_cases": [
+    {
+      "module": "github.com/hashicorp/golang-lru/v2",
+      "policy": "REVIEW_REQUIRED",
+      "reason": "MPL-2.0 with BSD-3-Clause simplelru/list.go; graph presence is not whole-product copyleft or proof of executable inclusion"
+    },
+    {
+      "module": "modernc.org/libc",
+      "policy": "REVIEW_REQUIRED",
+      "reason": "BSD wrapper plus MIT/musl/BSD/per-file permissive derivations; retain full third-party notice; GPL testdata separately"
+    },
+    {
+      "module": "modernc.org/sqlite",
+      "policy": "ALLOW_WITH_NOTICE_PENDING_ARTIFACT_SCOPE",
+      "reason": "BSD wrapper, public-domain Engine and MIT vec kept distinct; upstream source notice version list is not current resolved graph"
+    }
+  ],
+  "AGPL_found_in_collected_license_files": false,
+  "AGPL_absence_in_all_possible_source_not_certified": true,
+  "actual_notice_generated": false,
+  "actual_binary_license_bundle_generated": false
+}

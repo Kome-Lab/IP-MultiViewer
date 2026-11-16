@@ -1,0 +1,286 @@
+{
+  "schema": "ipmv.core.dependency-baseline.v1",
+  "evidence_origin": "Stage0-B B1-B3 retained real resolution; not re-resolved in B4/B5",
+  "repository": "https://github.com/Kome-Lab/IP-MultiViewer.git",
+  "base_commit": "28bda4ff1d58cd5b319f1ce7aaa608aa344aeb67",
+  "go_mod_sha256": "929a316ee77f6b053c1f63076124eb4837fd9b1c0dec6416082ff46b54650386",
+  "go_sum_sha256": "8ae30b632ae23b1fd187c518fa8cb91d6dbdfe41f2c3f06c3d1f008df51c9842",
+  "module_minimum_go": "1.26.5",
+  "execution_toolchain": "go1.27.4",
+  "modules": [
+    {
+      "path": "github.com/dustin/go-humanize",
+      "version": "v1.1.0",
+      "main": false,
+      "sum": "h1:dbKTrvD0klcbBV/h4AWJdMuZogJACoMlvWIWZ5b2xWg=",
+      "go_mod_sum": "h1:hc1CvRkJMsgxqjmjMQF3QNRAZBwY8AXBAzKYoSX9sFI=",
+      "go_version": "1.21"
+    },
+    {
+      "path": "github.com/example/ip-multiviewer",
+      "version": null,
+      "main": true,
+      "sum": null,
+      "go_mod_sum": null,
+      "go_version": "1.26.5"
+    },
+    {
+      "path": "github.com/google/pprof",
+      "version": "v0.0.0-20261016150608-1facf8f91b50",
+      "main": false,
+      "sum": "h1:PlNWJRxu5APSV0pWqfIsZ0qt9OOGHSWfZQ4zvx+WgWs=",
+      "go_mod_sum": "h1:yUo1AMMpsPIDFGuwDK8nLcf8+vvAd5l2O6JDZ6hpwrM=",
+      "go_version": "1.26.0"
+    },
+    {
+      "path": "github.com/google/uuid",
+      "version": "v1.6.0",
+      "main": false,
+      "sum": "h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=",
+      "go_mod_sum": "h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=",
+      "go_version": null
+    },
+    {
+      "path": "github.com/hashicorp/golang-lru/v2",
+      "version": "v2.0.7",
+      "main": false,
+      "sum": "h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs4luLUK2k=",
+      "go_mod_sum": "h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=",
+      "go_version": "1.18"
+    },
+    {
+      "path": "github.com/mattn/go-isatty",
+      "version": "v0.0.24",
+      "main": false,
+      "sum": "h1:tGZZoVgT/KiqK1c8ocVLeDS8BSWMRd47J3Lbz7vsReI=",
+      "go_mod_sum": "h1:nMCL3Zebbrt45jsMDgnfIwz6ydEQApk5oEI3HqDio6A=",
+      "go_version": "1.20"
+    },
+    {
+      "path": "github.com/ncruces/go-strftime",
+      "version": "v1.1.0",
+      "main": false,
+      "sum": "h1:vtPmPWMkb539RGV9WpWT9EwJGvrOCKvMNI4obWL47Hk=",
+      "go_mod_sum": "h1:yVaq7iwCN09vHRrKBrrflXT0M9tTMG2KmZ9Fj7xeG/g=",
+      "go_version": "1.24"
+    },
+    {
+      "path": "github.com/remyoudompheng/bigfft",
+      "version": "v0.0.0-20230129092748-24d4a6f8daec",
+      "main": false,
+      "sum": "h1:W09IVJc94icq4NjY3clb7Lk8O1qJ8BdBEF8z0ibU0rE=",
+      "go_mod_sum": "h1:qqbHyh8v60DhA7CoWK5oRCqLrMHRGoxYCSS9EjAz6Eo=",
+      "go_version": "1.12"
+    },
+    {
+      "path": "golang.org/x/mod",
+      "version": "v0.42.0",
+      "main": false,
+      "sum": "h1:ICeL3t2L30ljSPHHxDnR4fqVcBt/zR2zJAb9juavmQg=",
+      "go_mod_sum": "h1:u5fzIrRInkL8MaO1cbRkUHT64v303YIT5KEqpNr7jRs=",
+      "go_version": "1.26.0"
+    },
+    {
+      "path": "golang.org/x/sync",
+      "version": "v0.24.0",
+      "main": false,
+      "sum": "h1:iqiDrGoDgyuvAKrhLQthUEzU/R378N78gXbBjxed7oA=",
+      "go_mod_sum": "h1:sUUOizhqBxiL6pEWpqNLUiaJn1ShEbZ6BBqskPbjZm0=",
+      "go_version": "1.26.0"
+    },
+    {
+      "path": "golang.org/x/sys",
+      "version": "v0.49.0",
+      "main": false,
+      "sum": "h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=",
+      "go_mod_sum": "h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=",
+      "go_version": "1.26.0"
+    },
+    {
+      "path": "golang.org/x/tools",
+      "version": "v0.52.0",
+      "main": false,
+      "sum": "h1:ryxg4U63oaUYk7uOLTF37n43f4qgtGvqV4Ioit1BaEs=",
+      "go_mod_sum": "h1:ItcP5UNaVGG+Yc4eIYmaFLNJ4soEopkx5Y2d4lcEurs=",
+      "go_version": "1.26.0"
+    },
+    {
+      "path": "modernc.org/cc/v4",
+      "version": "v4.30.6-0.20261101114202-1b9d1a076f6b",
+      "main": false,
+      "sum": "h1:WE5SLOURcNd8s6uPR/n4WV4weQxxYKi5OpEZkfNVvdE=",
+      "go_mod_sum": "h1:OnovgIhbbMXMu1aISnJ0wvVD1KnW+cAUJkIrAWh+kVI=",
+      "go_version": "1.25"
+    },
+    {
+      "path": "modernc.org/ccgo/v4",
+      "version": "v4.38.1",
+      "main": false,
+      "sum": "h1:wdxJVBuFT8JufZnnQyS6Bbz3NOWhViD0xJOGR96Bpd4=",
+      "go_mod_sum": "h1:kOpEkJRbFwBvjUWwn4j1j9B7iFHbl1+orhgTMCDkDBk=",
+      "go_version": "1.26.0"
+    },
+    {
+      "path": "modernc.org/fileutil",
+      "version": "v1.4.0",
+      "main": false,
+      "sum": "h1:j6ZzNTftVS054gi281TyLjHPp6CPHr2KCxEXjEbD6SM=",
+      "go_mod_sum": "h1:EqdKFDxiByqxLk8ozOxObDSfcVOv/54xDs/DUHdvCUU=",
+      "go_version": "1.24"
+    },
+    {
+      "path": "modernc.org/gc/v2",
+      "version": "v2.6.5",
+      "main": false,
+      "sum": "h1:nyqdV8q46KvTpZlsw66kWqwXRHdjIlJOhG6kxiV/9xI=",
+      "go_mod_sum": "h1:YgIahr1ypgfe7chRuJi2gD7DBQiKSLMPgBQe9oIiito=",
+      "go_version": "1.21"
+    },
+    {
+      "path": "modernc.org/gc/v3",
+      "version": "v3.2.0",
+      "main": false,
+      "sum": "h1:/Y3LGDMQaoYf55PebP1qsZ5FDGgAZyG1RYKEHeQzh1o=",
+      "go_mod_sum": "h1:HFK/6AGESC7Ex+EZJhJ2Gni6cTaYpSMmU/cT9RmlfYY=",
+      "go_version": "1.23.0"
+    },
+    {
+      "path": "modernc.org/goabi0",
+      "version": "v0.2.0",
+      "main": false,
+      "sum": "h1:HvEowk7LxcPd0eq6mVOAEMai46V+i7Jrj13t4AzuNks=",
+      "go_mod_sum": "h1:CEFRnnJhKvWT1c1JTI3Avm+tgOWbkOu5oPA8eH8LnMI=",
+      "go_version": "1.23.0"
+    },
+    {
+      "path": "modernc.org/libc",
+      "version": "v1.80.1",
+      "main": false,
+      "sum": "h1:ejn7HtTV3GknNKbklqWQ1nvUrfX8mTxs1D+xp/JQwy4=",
+      "go_mod_sum": "h1:pvo25Rs3OJEbDqhUV9jdEGevxeLJrJeDmNid/AcQV1g=",
+      "go_version": "1.26.0"
+    },
+    {
+      "path": "modernc.org/mathutil",
+      "version": "v1.7.1",
+      "main": false,
+      "sum": "h1:GCZVGXdaN8gTqB1Mf/usp1Y/hSqgI2vAGGP4jZMCxOU=",
+      "go_mod_sum": "h1:4p5IwJITfppl0G4sUEDtCr4DthTaT47/N3aT6MhfgJg=",
+      "go_version": "1.21"
+    },
+    {
+      "path": "modernc.org/memory",
+      "version": "v1.12.1",
+      "main": false,
+      "sum": "h1:nFMiWrpStgZczNl6XI9GnIk/rWhYIyHGUaR04pGbp9g=",
+      "go_mod_sum": "h1:/JP4VbVC+K5sU2wZi9bHoq2MAkCnrt2r98UGeSK7Mjw=",
+      "go_version": "1.23.0"
+    },
+    {
+      "path": "modernc.org/opt",
+      "version": "v0.2.0",
+      "main": false,
+      "sum": "h1:tGyef5ApycA7FSEOMraay9SaTk5zmbx7Tu+cJs4QKZg=",
+      "go_mod_sum": "h1:03fq9lsNfvkYSfxrfUhZCWPk1lm4cq4N+Bh//bEtgns=",
+      "go_version": "1.21"
+    },
+    {
+      "path": "modernc.org/sortutil",
+      "version": "v1.2.1",
+      "main": false,
+      "sum": "h1:+xyoGf15mM3NMlPDnFqrteY07klSFxLElE2PVuWIJ7w=",
+      "go_mod_sum": "h1:7ZI3a3REbai7gzCLcotuw9AC4VZVpYMjDzETGsSMqJE=",
+      "go_version": "1.21"
+    },
+    {
+      "path": "modernc.org/sqlite",
+      "version": "v1.62.0",
+      "main": false,
+      "sum": "h1:gMaCjSM1qpl+iOjiWhR1LYP3zqrYDI+5GYLGt6veP2g=",
+      "go_mod_sum": "h1:Jzjh1mt4s0HuQ0KvtB1LIuHiGRmU2D5pgj8dUhW7/SE=",
+      "go_version": "1.26.0"
+    },
+    {
+      "path": "modernc.org/strutil",
+      "version": "v1.2.1",
+      "main": false,
+      "sum": "h1:UneZBkQA+DX2Rp35KcM69cSsNES9ly8mQWD71HKlOA0=",
+      "go_mod_sum": "h1:EHkiggD70koQxjVdSBM3JKM7k6L0FbGE5eymy9i3B9A=",
+      "go_version": "1.21"
+    },
+    {
+      "path": "modernc.org/token",
+      "version": "v1.1.0",
+      "main": false,
+      "sum": "h1:Xl7Ap9dKaEs5kLoOQeQmPWevfnk/DM5qcLcYlA8ys6Y=",
+      "go_mod_sum": "h1:UGzOrNV1mAFSEB63lOFHIpNRUVMvYTc6yu1SMY/XTDM=",
+      "go_version": null
+    }
+  ],
+  "graph_edges": [
+    "github.com/dustin/go-humanize@v1.1.0 go@1.21",
+    "github.com/example/ip-multiviewer github.com/dustin/go-humanize@v1.1.0",
+    "github.com/example/ip-multiviewer github.com/google/uuid@v1.6.0",
+    "github.com/example/ip-multiviewer github.com/mattn/go-isatty@v0.0.24",
+    "github.com/example/ip-multiviewer github.com/ncruces/go-strftime@v1.1.0",
+    "github.com/example/ip-multiviewer github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec",
+    "github.com/example/ip-multiviewer go@1.26.5",
+    "github.com/example/ip-multiviewer golang.org/x/sys@v0.49.0",
+    "github.com/example/ip-multiviewer modernc.org/libc@v1.80.1",
+    "github.com/example/ip-multiviewer modernc.org/mathutil@v1.7.1",
+    "github.com/example/ip-multiviewer modernc.org/memory@v1.12.1",
+    "github.com/example/ip-multiviewer modernc.org/sqlite@v1.62.0",
+    "github.com/example/ip-multiviewer toolchain@go1.27.4",
+    "github.com/mattn/go-isatty@v0.0.24 golang.org/x/sys@v0.28.0",
+    "github.com/ncruces/go-strftime@v1.1.0 go@1.24",
+    "go@1.26.5 toolchain@go1.26.5",
+    "golang.org/x/sys@v0.49.0 go@1.26.0",
+    "modernc.org/libc@v1.80.1 github.com/dustin/go-humanize@v1.1.0",
+    "modernc.org/libc@v1.80.1 github.com/google/uuid@v1.6.0",
+    "modernc.org/libc@v1.80.1 github.com/hashicorp/golang-lru/v2@v2.0.7",
+    "modernc.org/libc@v1.80.1 github.com/mattn/go-isatty@v0.0.24",
+    "modernc.org/libc@v1.80.1 github.com/ncruces/go-strftime@v1.1.0",
+    "modernc.org/libc@v1.80.1 github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec",
+    "modernc.org/libc@v1.80.1 go@1.26.0",
+    "modernc.org/libc@v1.80.1 golang.org/x/mod@v0.42.0",
+    "modernc.org/libc@v1.80.1 golang.org/x/sync@v0.24.0",
+    "modernc.org/libc@v1.80.1 golang.org/x/sys@v0.49.0",
+    "modernc.org/libc@v1.80.1 golang.org/x/tools@v0.52.0",
+    "modernc.org/libc@v1.80.1 modernc.org/cc/v4@v4.30.6-0.20261101114202-1b9d1a076f6b",
+    "modernc.org/libc@v1.80.1 modernc.org/ccgo/v4@v4.38.1",
+    "modernc.org/libc@v1.80.1 modernc.org/fileutil@v1.4.0",
+    "modernc.org/libc@v1.80.1 modernc.org/gc/v2@v2.6.5",
+    "modernc.org/libc@v1.80.1 modernc.org/gc/v3@v3.2.0",
+    "modernc.org/libc@v1.80.1 modernc.org/goabi0@v0.2.0",
+    "modernc.org/libc@v1.80.1 modernc.org/mathutil@v1.7.1",
+    "modernc.org/libc@v1.80.1 modernc.org/memory@v1.12.1",
+    "modernc.org/libc@v1.80.1 modernc.org/opt@v0.2.0",
+    "modernc.org/libc@v1.80.1 modernc.org/sortutil@v1.2.1",
+    "modernc.org/libc@v1.80.1 modernc.org/strutil@v1.2.1",
+    "modernc.org/libc@v1.80.1 modernc.org/token@v1.1.0",
+    "modernc.org/mathutil@v1.7.1 github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec",
+    "modernc.org/mathutil@v1.7.1 go@1.21",
+    "modernc.org/memory@v1.12.1 github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec",
+    "modernc.org/memory@v1.12.1 go@1.23.0",
+    "modernc.org/memory@v1.12.1 golang.org/x/sys@v0.31.0",
+    "modernc.org/memory@v1.12.1 modernc.org/mathutil@v1.7.1",
+    "modernc.org/sqlite@v1.62.0 github.com/dustin/go-humanize@v1.1.0",
+    "modernc.org/sqlite@v1.62.0 github.com/google/pprof@v0.0.0-20261016150608-1facf8f91b50",
+    "modernc.org/sqlite@v1.62.0 github.com/google/uuid@v1.6.0",
+    "modernc.org/sqlite@v1.62.0 github.com/mattn/go-isatty@v0.0.24",
+    "modernc.org/sqlite@v1.62.0 github.com/ncruces/go-strftime@v1.1.0",
+    "modernc.org/sqlite@v1.62.0 github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec",
+    "modernc.org/sqlite@v1.62.0 go@1.26.0",
+    "modernc.org/sqlite@v1.62.0 golang.org/x/sys@v0.49.0",
+    "modernc.org/sqlite@v1.62.0 modernc.org/fileutil@v1.4.0",
+    "modernc.org/sqlite@v1.62.0 modernc.org/libc@v1.80.1",
+    "modernc.org/sqlite@v1.62.0 modernc.org/mathutil@v1.7.1",
+    "modernc.org/sqlite@v1.62.0 modernc.org/memory@v1.12.1"
+  ],
+  "module_count": 26,
+  "edge_count": 58,
+  "digest_profile": "ipmv.modules-graph.v1: root field order modules,graph_edges; module fields path,version,main,sum,go_mod_sum,go_version; modules sorted lexicographically by path and edges sorted lexicographically; compact UTF-8 JSON with no final LF; NOT H01 JCS",
+  "dependency_set_digest": "84a448d4c55d170970692c508308b01c263f9b14659f6597483356fc9695ad40",
+  "replace_allowed": false,
+  "exclude_allowed": false
+}

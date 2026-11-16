@@ -1,0 +1,36 @@
+# NOT AN ACTIVE WORKFLOW. Activation requires separate user approval.
+# Protected environment must already exist with enforced reviewers and branch restrictions.
+name: Core Protected Builder and Attestation (example)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  protected-build:
+    if: >-
+      github.repository == 'Kome-Lab/IP-MultiViewer' &&
+      vars.IPMV_RELEASE_EXECUTION_ENABLED == 'SEPARATELY_APPROVED' &&
+      vars.IPMV_CORE_APPROVED_COMMIT == github.sha
+    environment: core-release-protected
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+          clean: false
+      - name: Block until protected same-run builder and verifier are approved
+        run: |
+          echo "BLOCKED: preparation example; no builder or signer activated"
+          exit 1
+      # Replace blocker only through separate reviewed implementation.
+      # Build/hash/collect evidence in this SAME protected builder run.
+      # Never relabel a downloaded artifact as built by this signing job.
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-checksums: core-output/SHA256SUMS
+          show-summary: false
+      # Authenticode and D15-A06 Release Manifest signing remain separate operations.

@@ -1,0 +1,72 @@
+{
+  "schema": "ipmv.core.sbom-profile.v1",
+  "primary_format": "cyclonedx-json@1.6",
+  "secondary_format": "spdx-json@2.3",
+  "secondary_use": "consumer/export compatibility; do not assume lossless roundtrip",
+  "generator": {
+    "tool": "syft",
+    "version": "1.57.1",
+    "lock": "ci/core-runtime/tool-lock.json"
+  },
+  "stages": [
+    {
+      "id": "SOURCE_RESOLVED",
+      "lifecycle": "pre-build",
+      "subjects": [
+        "go.mod",
+        "go.sum",
+        "retained+fresh graph",
+        "toolchain",
+        "native lineage"
+      ],
+      "actual_artifact": false
+    },
+    {
+      "id": "BUILD_ENVIRONMENT",
+      "lifecycle": "build",
+      "subjects": [
+        "Go and tools",
+        "runner image/version",
+        "SDK if any",
+        "command/env allowlist"
+      ],
+      "actual_artifact": false
+    },
+    {
+      "id": "ARTIFACT_OBSERVED",
+      "lifecycle": "post-build",
+      "subjects": [
+        "exact executable/package bytes",
+        "Go build information",
+        "native/embedded component evidence"
+      ],
+      "actual_artifact": true
+    }
+  ],
+  "required_components": [
+    "Go runtime",
+    "all selected modules with direct/indirect/main scope",
+    "SQLite driver",
+    "SQLite engine lineage",
+    "libc generated/native origin",
+    "native dependencies",
+    "build tools",
+    "Windows SDK if applicable",
+    "future Media/GPU dependencies before their use"
+  ],
+  "engine_observation": "3.54.1 is source-documented; do not relabel runtime verified. Module list cannot enumerate all native/generated material.",
+  "assembly_completeness": "UNKNOWN_UNTIL_ARTIFACT_AND_NATIVE_RECONCILIATION",
+  "artifact_binding": [
+    "sha256",
+    "size",
+    "os",
+    "arch",
+    "source_commit",
+    "dependency_set_digest",
+    "SBOM sha256"
+  ],
+  "storage": "immutable run-id/attempt + artifact digest; references pinned in build-evidence index; released evidence retained beyond temporary CI artifacts",
+  "signing": "attest exact SBOM bytes and subject artifact after separate approval",
+  "diff": "module/version/hash/licenses + component additions/removals + build/native scope; new/unknown material requires review",
+  "generated_in_this_task": false
+}

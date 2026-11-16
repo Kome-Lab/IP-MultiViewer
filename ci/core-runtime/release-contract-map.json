@@ -1,0 +1,112 @@
+{
+  "schema": "ipmv.core.release-evidence-mapping.v1",
+  "state": "PREPARATION_ONLY_NO_RELEASE_MANIFEST_GENERATED",
+  "baseline": {
+    "library_file_id": "libfile_fde3_f-96bb6651961c8191803729cd3f08611e_84b603af1df0819189dc1dbca57ecc8f",
+    "file_name": "IPMultiViewer_D15_A05_Adoption_A06_Migration_Update_Rollback_Recovery_r1.html",
+    "version": "0",
+    "section": "03_RELEASE_MANIFEST_AND_SERVICE_UPDATE.md §2 / HTML chapter-3 §2",
+    "frozen_schema": "schemas/release-manifest.schema.json (D15-A06)"
+  },
+  "frozen_required_artifact_fields": [
+    "artifact_id",
+    "artifact_kind",
+    "deployment_kind",
+    "deployment_unit_id",
+    "artifact_version",
+    "sha256",
+    "size_bytes",
+    "artifact_locator",
+    "build_provenance",
+    "sbom_ref",
+    "dependency_set_digest",
+    "supported_os",
+    "required_runtime",
+    "required_sqlite_engine",
+    "required_driver",
+    "required_db_schema",
+    "supported_ipc_wire",
+    "supported_remote_api",
+    "configuration_schema_refs",
+    "compatibility_range",
+    "security_revision",
+    "minimum_security_revision",
+    "rollback_policy",
+    "migration_bundle_ref"
+  ],
+  "frozen_root_fields": [
+    "schema_version",
+    "release_id",
+    "manifest_id",
+    "manifest_revision",
+    "created_at",
+    "signer_identity",
+    "signature",
+    "artifacts"
+  ],
+  "do_not_extend_closed_release_schema": true,
+  "evidence_index": "ci/core-runtime/build-evidence-index.schema.json",
+  "mapping": [
+    {
+      "release_field": "sha256 + size_bytes",
+      "source": "exact final distributable bytes; if Authenticode/package transformation changes bytes, rehash and re-attest"
+    },
+    {
+      "release_field": "artifact_version",
+      "source": "approved target/profile version, not universal release-number inference"
+    },
+    {
+      "release_field": "dependency_set_digest",
+      "source": "real fresh graph compared to baseline + exact build-record tuple"
+    },
+    {
+      "release_field": "sbom_ref",
+      "source": "hash-pinned artifact SBOM; primary CycloneDX1.6"
+    },
+    {
+      "release_field": "build_provenance",
+      "source": "typed immutable build evidence index + verified platform attestation; index carries license/security/provenance closure",
+      "reason": "Do not add license_report_ref/security_report_ref to closed D15-A06 descriptor"
+    },
+    {
+      "release_field": "signer_identity (root)",
+      "source": "separately approved release signer, distinct from build-platform attestation identity"
+    },
+    {
+      "release_field": "compatibility_range / required_*",
+      "source": "approved nine-axis compatibility profile; unknown not wildcard"
+    },
+    {
+      "release_field": "security_revision + minimum_security_revision",
+      "source": "approved monotonic security floor; do not infer from app semver"
+    }
+  ],
+  "pre_release_gates": [
+    "verified exact source Commit",
+    "passed required stages on approved targets",
+    "artifact/native/stdlib/license closure",
+    "fresh advisory reports and unexpired approved exceptions",
+    "verified build attestation against exact repository/workflow/Commit/artifact",
+    "approved compatibility and schema profiles",
+    "approved signing product/key/rotation + signature verification",
+    "recomputed final artifact and manifest hash after all transformations",
+    "authorized release operation"
+  ],
+  "unsigned_candidate": {
+    "release_eligible": false,
+    "signer_identity": null,
+    "provenance_ref": null,
+    "status": "UNATTESTED_REVIEW_CANDIDATE"
+  },
+  "circular_reference_rule": "Artifact and immutable reports first; build predicate references build evidence inputs; attestation bundle outside its own signed payload. Final signed Release Manifest points at immutable closure; never include its own final digest in its signed body.",
+  "reference_schema_sha256": "9a19c93db5b929c827e86ba8c9dd7319c8edcb678bc4f5852ffc89aa954996d0",
+  "reference_hash_scope": "HTML-decoded complete schema text; do not claim original ZIP byte hash",
+  "typed_conversion": {
+    "Digest": {
+      "algorithm": "sha256",
+      "value": "64 lowercase hex digits"
+    },
+    "Ref": "schema_version + namespaced id + decimal U64 revision + content_hash Digest",
+    "rule": "Foundation strings/paths are not copied untyped into frozen descriptors. Required null is only true non-applicability; unresolved fields block Release Manifest generation."
+  }
+}

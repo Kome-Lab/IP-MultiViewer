@@ -1,0 +1,37 @@
+{
+  "schema": "ipmv.core.build-targets.v1",
+  "status": "UNASSIGNED_AWAITING_REAL_CORE_ENTRYPOINTS",
+  "reason": "New ObserverHost/Local Config/Delivery entrypoints do not exist at baseline. Existing apps/server and apps/agent are legacy; do not rename them as renewed Core.",
+  "targets": [],
+  "unit_test_packages": [],
+  "integration_test_packages": [],
+  "source_analysis_packages": [],
+  "platforms": [
+    {
+      "goos": "windows",
+      "goarch": "amd64",
+      "runner": "windows-2025"
+    },
+    {
+      "goos": "windows",
+      "goarch": "arm64",
+      "runner": "windows-2025"
+    },
+    {
+      "goos": "linux",
+      "goarch": "amd64",
+      "runner": "ubuntu-24.04"
+    },
+    {
+      "goos": "linux",
+      "goarch": "arm64",
+      "runner": "ubuntu-24.04"
+    }
+  ],
+  "forbidden_path_segments": [
+    "apps/desktop-windows",
+    "renewal-poc"
+  ],
+  "activation_requires": "Separate approval of actual nonGPU target paths and an exact committed source revision; no arbitrary workflow input paths",
+  "approval_binding": "protected IPMV_CORE_APPROVED_COMMIT + IPMV_CORE_TARGETS_SHA256; no self-referential commit hash inside tracked target file"
+}

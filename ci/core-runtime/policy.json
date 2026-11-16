@@ -1,0 +1,113 @@
+{
+  "schema": "ipmv.core.supply-chain-policy.v1",
+  "mode": "PREPARATION_ONLY",
+  "freeze_id": "P4-FREEZE-20261115-R1",
+  "dependencies": {
+    "baseline": "ci/core-runtime/dependency-baseline.json",
+    "review_required_for_new": true,
+    "review_required_for_transitive_delta": true,
+    "replace": "DENY_UNLESS_SEPARATELY_APPROVED_EXACT_ORIGIN_AND_DIGEST",
+    "exclude": "DENY_UNLESS_SEPARATELY_APPROVED_GRAPH_CHANGE",
+    "floating_versions": "DENY",
+    "direct_vcs_and_unofficial_mirror": "DENY",
+    "proxy": "https://proxy.golang.org",
+    "sumdb": "sum.golang.org",
+    "sumdb_disable": "DENY",
+    "vendor": "NOT_ADOPTED; introduce only with separate reviewed modules.txt + hashes",
+    "mutating_go_commands_in_ci": "DENY",
+    "separate_tool_module_graph": true
+  },
+  "license": {
+    "categories": [
+      "ALLOW",
+      "ALLOW_WITH_NOTICE",
+      "REVIEW_REQUIRED",
+      "RESTRICTED",
+      "UNKNOWN"
+    ],
+    "mapping": {
+      "BSD-3-Clause": "ALLOW_WITH_NOTICE",
+      "BSD-2-Clause": "ALLOW_WITH_NOTICE",
+      "MIT": "ALLOW_WITH_NOTICE",
+      "Apache-2.0": "ALLOW_WITH_NOTICE",
+      "MPL-2.0": "REVIEW_REQUIRED",
+      "GPL-2.0-only": "RESTRICTED",
+      "GPL-2.0-or-later": "RESTRICTED",
+      "AGPL-3.0-only": "RESTRICTED",
+      "AGPL-3.0-or-later": "RESTRICTED"
+    },
+    "unknown": "BLOCK_DISTRIBUTION_PENDING_REVIEW",
+    "scope_rule": "module graph presence != binary inclusion; source/test/build/runtime/assets assessed separately",
+    "notice": "Draft inventory now; actual distribution NOTICE and full licenses only after artifact inclusion evidence"
+  },
+  "security": {
+    "sources": [
+      "Go vulnerability database",
+      "OSV",
+      "GitHub Security Advisories",
+      "NVD",
+      "SQLite official security/CVE pages",
+      "upstream security notices"
+    ],
+    "scan_status": "NOT_RUN",
+    "unknown_coverage": "UNKNOWN_NOT_ZERO",
+    "release_gate": {
+      "critical_or_high_affected": "BLOCK_UNLESS_TIME_BOUNDED_APPROVED_EXCEPTION",
+      "unknown_severity_or_mapping": "REVIEW_REQUIRED",
+      "scanner_error_or_stale_feed": "BLOCK",
+      "reachability_unknown": "NOT_A_SUPPRESSION",
+      "zero_findings": "NOT_A_SAFETY_CERTIFICATE"
+    },
+    "exception": {
+      "fields": [
+        "advisory_ids",
+        "component_version",
+        "scope",
+        "affected_artifact_sha256",
+        "justification",
+        "reachability_evidence",
+        "owner",
+        "approver",
+        "approved_at",
+        "expires_at",
+        "compensating_controls",
+        "review_trigger"
+      ],
+      "expiry_mandatory": true,
+      "default_exception_days": null
+    },
+    "candidate_response_sla": {
+      "status": "PROPOSED_NOT_OPERATIONAL_APPROVAL",
+      "critical": "triage within 1 business day",
+      "high": "triage within 3 business days",
+      "fixed_version": "review tuple and compatibility; no automatic upgrade"
+    }
+  },
+  "ci": {
+    "trigger": "workflow_dispatch only",
+    "execution": "requires protected authorization variable matching github.sha + explicit input; not configured by task",
+    "permissions": {
+      "contents": "read"
+    },
+    "secrets": "none in ordinary CI",
+    "cache": "disabled for current foundation",
+    "runner": "GitHub-hosted ephemeral; no self-hosted untrusted PR",
+    "automatic_publish": false,
+    "automatic_signing": false,
+    "artifact_retention_days": 14,
+    "retention_status": "candidate; archive released evidence separately under retention policy"
+  },
+  "provenance": {
+    "predicate": "https://slsa.dev/provenance/v1",
+    "self_report_json": "UNATTESTED_EVIDENCE_ONLY",
+    "signed_attestation": "separate protected same-build job after approval",
+    "attestation_verification": "repository + workflow + exact commit/ref + artifact digest + signer identity",
+    "slsa_level_claim": "NONE_UNTIL_BUILDER_AND_VERIFIER_VALIDATED"
+  },
+  "states": {
+    "D15_COMPAT_01_dependency_alignment": "PASS",
+    "D15_COMPAT_01_overall": "OPEN",
+    "R_UX_01": "LOW_NON_BLOCKING_OPEN",
+    "phase3a": "BLOCKED"
+  }
+}

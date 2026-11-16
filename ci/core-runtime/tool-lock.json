@@ -1,0 +1,157 @@
+{
+  "schema": "ipmv.core.tool-lock.v1",
+  "recorded_on": "2026-11-16 Asia/Tokyo",
+  "state": "DEFINITION_ONLY_NOT_INSTALLED_OR_EXECUTED",
+  "go": {
+    "version": "1.27.4",
+    "module_minimum": "1.26.5",
+    "selection": "explicit setup-go patch + GOTOOLCHAIN=local; never module minimum as execution pin"
+  },
+  "python": {
+    "version": "3.14.10",
+    "purpose": "future CI orchestration only",
+    "official_release": "https://www.python.org/downloads/release/python-31410/",
+    "installed_by_this_task": false
+  },
+  "actions": [
+    {
+      "name": "actions/checkout",
+      "version": "v7",
+      "commit": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+    },
+    {
+      "name": "actions/setup-go",
+      "version": "v6",
+      "commit": "924ae3a1cded613372ab5595356fb5720e22ba16"
+    },
+    {
+      "name": "actions/setup-python",
+      "version": "v6",
+      "commit": "ece7cb06caefa5fff74198d8649806c4678c61a1"
+    },
+    {
+      "name": "actions/upload-artifact",
+      "version": "v7",
+      "commit": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+    },
+    {
+      "name": "actions/attest",
+      "version": "v4",
+      "commit": "1e69f48acb82d1966a394da916b4c1698aa569d6"
+    }
+  ],
+  "tools": [
+    {
+      "id": "syft",
+      "version": "1.57.1",
+      "source": "https://github.com/anchore/syft",
+      "release_url": "https://github.com/anchore/syft/releases/tag/v1.57.1",
+      "published_at": "2026-11-09T14:39:42Z",
+      "license": "Apache-2.0",
+      "assets": [
+        {
+          "file_name": "syft_1.57.1_linux_amd64.tar.gz",
+          "url": "https://github.com/anchore/syft/releases/download/v1.57.1/syft_1.57.1_linux_amd64.tar.gz",
+          "sha256": "bf52519eb57f675d47c07d43213cb6dff6449f3d6d1147ff6701ed91f44eef0c",
+          "size_bytes": 31432061
+        },
+        {
+          "file_name": "syft_1.57.1_linux_arm64.tar.gz",
+          "url": "https://github.com/anchore/syft/releases/download/v1.57.1/syft_1.57.1_linux_arm64.tar.gz",
+          "sha256": "aa3d3e07344f590bcce8d31043b752daa76c8a56c2aa34ceeee63c6168152582",
+          "size_bytes": 28655908
+        },
+        {
+          "file_name": "syft_1.57.1_windows_amd64.zip",
+          "url": "https://github.com/anchore/syft/releases/download/v1.57.1/syft_1.57.1_windows_amd64.zip",
+          "sha256": "3a01fe865076bb548352195b77e88fa4649277861ea458efe165c3a810b6dcc7",
+          "size_bytes": 30255314
+        },
+        {
+          "file_name": "syft_1.57.1_windows_arm64.zip",
+          "url": "https://github.com/anchore/syft/releases/download/v1.57.1/syft_1.57.1_windows_arm64.zip",
+          "sha256": "8cdd580b5f7160d12b66c7c5191100a6cf792e130d8a28deeae5ea45e0030e00",
+          "size_bytes": 27200178
+        }
+      ],
+      "sha256_evidence": "official GitHub release asset digest; bytes not downloaded or signature-verified in B4/B5",
+      "usage": [
+        "source inventory",
+        "artifact inventory",
+        "CycloneDX 1.6",
+        "SPDX 2.3"
+      ]
+    },
+    {
+      "id": "osv-scanner",
+      "version": "2.7.1",
+      "source": "https://github.com/google/osv-scanner",
+      "release_url": "https://github.com/google/osv-scanner/releases/tag/v2.7.1",
+      "published_at": "2026-11-09T04:15:04Z",
+      "license": "Apache-2.0",
+      "assets": [
+        {
+          "file_name": "osv-scanner_linux_amd64",
+          "url": "https://github.com/google/osv-scanner/releases/download/v2.7.1/osv-scanner_linux_amd64",
+          "sha256": "fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8",
+          "size_bytes": 58187936
+        },
+        {
+          "file_name": "osv-scanner_linux_arm64",
+          "url": "https://github.com/google/osv-scanner/releases/download/v2.7.1/osv-scanner_linux_arm64",
+          "sha256": "983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81",
+          "size_bytes": 54198432
+        },
+        {
+          "file_name": "osv-scanner_windows_amd64.exe",
+          "url": "https://github.com/google/osv-scanner/releases/download/v2.7.1/osv-scanner_windows_amd64.exe",
+          "sha256": "7121dcf420aefbbf89a7f0050c4d3094e079ff93afd334dfc96f16b02ec85800",
+          "size_bytes": 59462656
+        },
+        {
+          "file_name": "osv-scanner_windows_arm64.exe",
+          "url": "https://github.com/google/osv-scanner/releases/download/v2.7.1/osv-scanner_windows_arm64.exe",
+          "sha256": "5f3998b55c9268f8468502bbcb60645038fd5b145ee5e685e6ae2a32e923afc7",
+          "size_bytes": 54770176
+        }
+      ],
+      "sha256_evidence": "official GitHub release asset digest; bytes not downloaded or executed",
+      "usage": [
+        "artifact SBOM version matching",
+        "source lockfile version matching"
+      ]
+    },
+    {
+      "id": "govulncheck",
+      "version": "1.1.4",
+      "source": "https://github.com/golang/vuln/tree/v1.1.4",
+      "module": "golang.org/x/vuln",
+      "module_sum": "h1:Ju8QsuyhX3Hk8ma3CesTbO8vfJD9EvUBgHvkxHBzj0I=",
+      "go_mod_sum": "h1:F+45wmU18ym/ca5PLTPLsSzr2KppzswxPP603ldA67s=",
+      "status": "OPTIONAL_COMPLEMENT_SOURCE_PINNED_TOOL_GRAPH_AND_BINARY_PROVENANCE_PENDING",
+      "installation_allowed_by_this_task": false,
+      "usage": [
+        "Go symbol/call reachability complement; not native SQLite CVE coverage"
+      ]
+    }
+  ],
+  "runner_profiles": [
+    {
+      "label": "windows-2025",
+      "use": "Windows nonGPU core compile; no existing desktop/Media scripts",
+      "immutable_image": false
+    },
+    {
+      "label": "ubuntu-24.04",
+      "use": "Linux nonGPU compile and security metadata",
+      "immutable_image": false
+    }
+  ],
+  "native_build_components": {
+    "CGO_ENABLED": "0",
+    "windows_sdk": "NOT_REQUIRED_BY_CURRENT_PURE_GO_CORE_PROFILE; record exact SDK if introduced",
+    "msvc": "NOT_SELECTED",
+    "mingw": "PROHIBITED_WITHOUT_SEPARATE_APPROVAL; Phase3-A remains BLOCKED",
+    "media_gpu": "OUT_OF_SCOPE_BLOCKED; inventory additions before adoption"
+  }
+}

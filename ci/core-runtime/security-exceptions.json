@@ -1,0 +1,5 @@
+{
+  "schema": "ipmv.core.security-exceptions.v1",
+  "exceptions": [],
+  "blanket_exceptions_allowed": false
+}
