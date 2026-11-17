@@ -1,0 +1,347 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ipmv:core:build-environment-profile:1",
+  "title": "Immutable pure-Go Core environment policy v1; changing policy requires version/hash review",
+  "type": "object",
+  "required": [
+    "schema",
+    "profile_id",
+    "profile_version",
+    "status",
+    "go_toolchain_version",
+    "module_minimum",
+    "go_toolchain_path",
+    "go_toolchain_sha256",
+    "goos",
+    "goarch",
+    "goamd64",
+    "goarm64",
+    "cgo_enabled",
+    "compiler_policy",
+    "required_sdk",
+    "dependency_set_digest",
+    "dependency_tuple",
+    "build_flags",
+    "module_mode",
+    "environment_fixed",
+    "environment_derived",
+    "environment_allowlist",
+    "environment_denylist",
+    "unlisted_environment",
+    "path_policy",
+    "toolchain_tree_policy",
+    "approval_anchors",
+    "official_distributions",
+    "runner_profiles",
+    "reproducibility_policy",
+    "manifest_contract",
+    "failure",
+    "go_probe_semantics"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "ipmv.core.build-environment-profile.v1"
+    },
+    "profile_id": {
+      "const": "ipmv-core-purego-v1"
+    },
+    "profile_version": {
+      "const": "1"
+    },
+    "status": {
+      "const": "DEFINITION_ONLY_NOT_EXECUTED"
+    },
+    "go_toolchain_version": {
+      "const": "go1.27.4"
+    },
+    "module_minimum": {
+      "const": "1.26.5"
+    },
+    "go_toolchain_path": {
+      "const": {
+        "source": "approved_environment_binding",
+        "field": "go_toolchain_path",
+        "absolute": true
+      }
+    },
+    "go_toolchain_sha256": {
+      "const": {
+        "source": "approved_environment_binding",
+        "field": "go_toolchain_sha256",
+        "algorithm": "sha256"
+      }
+    },
+    "goos": {
+      "const": [
+        "windows",
+        "linux"
+      ]
+    },
+    "goarch": {
+      "const": [
+        "amd64",
+        "arm64"
+      ]
+    },
+    "goamd64": {
+      "const": "v1"
+    },
+    "goarm64": {
+      "const": "v8.0"
+    },
+    "cgo_enabled": {
+      "const": "0"
+    },
+    "compiler_policy": {
+      "const": "GC_ONLY_NO_NATIVE_COMPILER_NO_SDK"
+    },
+    "required_sdk": {
+      "const": []
+    },
+    "dependency_set_digest": {
+      "const": "84a448d4c55d170970692c508308b01c263f9b14659f6597483356fc9695ad40"
+    },
+    "dependency_tuple": {
+      "const": {
+        "sqlite": "v1.62.0",
+        "libc": "v1.80.1",
+        "x_sys": "v0.49.0",
+        "sqlite_engine_documented_only": "3.54.1"
+      }
+    },
+    "build_flags": {
+      "const": [
+        "-mod=readonly",
+        "-trimpath",
+        "-buildvcs=false",
+        "-compiler=gc",
+        "-pgo=off",
+        "-ldflags=-buildid="
+      ]
+    },
+    "module_mode": {
+      "const": "readonly"
+    },
+    "environment_fixed": {
+      "const": {
+        "GOTOOLCHAIN": "local",
+        "GOENV": "off",
+        "GOWORK": "off",
+        "GO111MODULE": "on",
+        "GOFLAGS": "-mod=readonly",
+        "CGO_ENABLED": "0",
+        "GOEXPERIMENT": "",
+        "GODEBUG": "",
+        "GOCACHEPROG": "",
+        "GOPROXY": "https://proxy.golang.org",
+        "GOSUMDB": "sum.golang.org",
+        "GOPRIVATE": "",
+        "GONOPROXY": "",
+        "GONOSUMDB": "",
+        "GOINSECURE": "",
+        "GOVCS": "*:off",
+        "GOAUTH": "off",
+        "GOTELEMETRY": "off",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "TZ": "UTC"
+      }
+    },
+    "environment_derived": {
+      "const": {
+        "GOROOT": "binding.go_toolchain_root",
+        "GOPATH": "state/gopath",
+        "GOMODCACHE": "state/modcache",
+        "GOCACHE": "state/gocache",
+        "GOTMPDIR": "state/tmp",
+        "TMPDIR": "state/tmp",
+        "TMP": "state/tmp",
+        "TEMP": "state/tmp",
+        "HOME": "state/home",
+        "USERPROFILE": "state/home",
+        "APPDATA": "state/config",
+        "LOCALAPPDATA": "state/local",
+        "XDG_CONFIG_HOME": "state/config",
+        "XDG_CACHE_HOME": "state/cache",
+        "GOOS": "target.goos",
+        "GOARCH": "target.goarch",
+        "PATH": "binding.go_toolchain_root/bin only",
+        "GOAMD64": "v1 only when GOARCH=amd64",
+        "GOARM64": "v8.0 only when GOARCH=arm64",
+        "SystemRoot": "Windows kernel API + approved binding only",
+        "WINDIR": "Windows kernel API + approved binding only",
+        "PATHEXT": ".EXE only on Windows"
+      }
+    },
+    "environment_allowlist": {
+      "const": [
+        "APPDATA",
+        "CGO_ENABLED",
+        "GO111MODULE",
+        "GOAMD64",
+        "GOARCH",
+        "GOARM64",
+        "GOAUTH",
+        "GOCACHE",
+        "GOCACHEPROG",
+        "GODEBUG",
+        "GOENV",
+        "GOEXPERIMENT",
+        "GOFLAGS",
+        "GOINSECURE",
+        "GOMODCACHE",
+        "GONOPROXY",
+        "GONOSUMDB",
+        "GOOS",
+        "GOPATH",
+        "GOPRIVATE",
+        "GOPROXY",
+        "GOROOT",
+        "GOSUMDB",
+        "GOTELEMETRY",
+        "GOTMPDIR",
+        "GOTOOLCHAIN",
+        "GOVCS",
+        "GOWORK",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LOCALAPPDATA",
+        "PATH",
+        "PATHEXT",
+        "SystemRoot",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "TZ",
+        "USERPROFILE",
+        "WINDIR",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME"
+      ]
+    },
+    "environment_denylist": {
+      "const": [
+        "(?i)^(CC|CXX|FC|AR|GCCGO)$",
+        "(?i)^CGO_(?!ENABLED$).*",
+        "(?i)^PKG_CONFIG.*",
+        "(?i)^(INCLUDE|LIB|LIBPATH|MSYSTEM)$",
+        "(?i).*CL.*",
+        "(?i)^(VS.*|VC.*|VSCMD.*|WINDOWSSDK.*|WINDOWS_SDK.*|UCRT.*|UNIVERSALCRT.*|MINGW.*|MSYS.*|CYGWIN.*)$",
+        "(?i)^(LD_.*|DYLD_.*|GIT_.*|SSL_CERT_.*|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|PYTHON.*)$"
+      ]
+    },
+    "unlisted_environment": {
+      "const": "DROP_FROM_CHILD; never copy parent; check denylist after construction"
+    },
+    "path_policy": {
+      "const": "EXACT_SINGLE_VERIFIED_GOROOT_BIN; NO_NATIVE_PATH_DISCOVERY"
+    },
+    "toolchain_tree_policy": {
+      "const": "COMPLETE_SORTED_SINGLE_LINK_REGULAR_FILE_INVENTORY; SHA256_OF_COMPACT_SORTED_KEY_JSON; NO_AUTO_ACCEPT_LIVE_HASH"
+    },
+    "approval_anchors": {
+      "const": {
+        "source": "existing protected exact Commit gate",
+        "profile_sha256": "IPMV_BUILD_PROFILE_SHA256",
+        "binding_sha256_map": "IPMV_BUILD_BINDINGS_SHA256; registered runner_profile_id -> sha256",
+        "binding_directory": "ci/core-runtime/environment-bindings; absent or unknown blocks all Go execution"
+      }
+    },
+    "official_distributions": {
+      "const": [
+        {
+          "host_os": "windows",
+          "host_arch": "amd64",
+          "url": "https://go.dev/dl/go1.27.4.windows-amd64.zip",
+          "archive_sha256": "178ab98950ac69ab25069307dc6ade79f3816e414cce95b4da166a115cde1e7e"
+        },
+        {
+          "host_os": "linux",
+          "host_arch": "amd64",
+          "url": "https://go.dev/dl/go1.27.4.linux-amd64.tar.gz",
+          "archive_sha256": "7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840"
+        }
+      ]
+    },
+    "runner_profiles": {
+      "const": [
+        {
+          "id": "gha-windows-2025-amd64",
+          "kind": "github-hosted",
+          "state": "APPROVED_BINDING_REQUIRED",
+          "host_os": "windows",
+          "host_arch": "amd64",
+          "runner_label": "windows-2025",
+          "targets": [
+            "windows/amd64",
+            "windows/arm64"
+          ]
+        },
+        {
+          "id": "gha-ubuntu-24.04-amd64",
+          "kind": "github-hosted",
+          "state": "APPROVED_BINDING_REQUIRED",
+          "host_os": "linux",
+          "host_arch": "amd64",
+          "runner_label": "ubuntu-24.04",
+          "targets": [
+            "linux/amd64",
+            "linux/arm64"
+          ]
+        },
+        {
+          "id": "self-hosted-core-v1",
+          "kind": "self-hosted",
+          "state": "BLOCKED_REQUIRES_SEPARATE_PROFILE_AND_APPROVAL",
+          "host_os": null,
+          "host_arch": null,
+          "runner_label": null,
+          "targets": []
+        },
+        {
+          "id": "local-core-v1",
+          "kind": "local",
+          "state": "BLOCKED_REQUIRES_SEPARATE_PROFILE_AND_APPROVAL",
+          "host_os": null,
+          "host_arch": null,
+          "runner_label": null,
+          "targets": []
+        }
+      ]
+    },
+    "reproducibility_policy": {
+      "const": {
+        "status": "NOT_DEMONSTRATED",
+        "toolchain": "exact approved full tree, launcher and host tool hashes",
+        "cache": "fresh per approved output workspace/target; no user module or build cache",
+        "timestamps": "outside binary only",
+        "source_paths": "trimpath; exact source Commit in evidence",
+        "build_id": "empty",
+        "pgo": "off",
+        "native_media_gpu": "separate profile/workflow; Phase 3-A BLOCKED"
+      }
+    },
+    "manifest_contract": {
+      "const": "ci/core-runtime/build-environment-manifest.schema.json"
+    },
+    "failure": {
+      "const": "FAIL_CLOSED_BEFORE_GO_OR_BUILD; unknown is not match"
+    },
+    "go_probe_semantics": {
+      "const": {
+        "GOENV": {
+          "configured": "off",
+          "reported": ""
+        },
+        "GOWORK": {
+          "configured": "off",
+          "reported": "off"
+        },
+        "inactive_arch": "not queried",
+        "GOEXPERIMENT": "empty selects defaults of the exactly pinned toolchain; no parent experiments"
+      }
+    }
+  }
+}

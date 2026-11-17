@@ -1,0 +1,565 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ipmv:core:build-environment-manifest:1",
+  "title": "Pre-build environment observation; never a Release Manifest",
+  "type": "object",
+  "required": [
+    "schema",
+    "status",
+    "profile_id",
+    "profile_version",
+    "profile_sha256",
+    "source_commit",
+    "dependency_set_digest",
+    "binding_ref",
+    "runner",
+    "target",
+    "go_toolchain_path",
+    "go_toolchain_sha256",
+    "toolchain_tree_sha256",
+    "normalized_environment",
+    "observed_go_environment",
+    "discarded_parent_environment_names",
+    "build_flags",
+    "profile_match",
+    "build_started",
+    "release_eligible"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "ipmv.core.build-environment-manifest.v1"
+    },
+    "status": {
+      "enum": [
+        "VALIDATED_PRE_BUILD",
+        "NOT_EXECUTED_EXAMPLE"
+      ]
+    },
+    "profile_id": {
+      "const": "ipmv-core-purego-v1"
+    },
+    "profile_version": {
+      "const": "1"
+    },
+    "profile_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "dependency_set_digest": {
+      "const": "84a448d4c55d170970692c508308b01c263f9b14659f6597483356fc9695ad40"
+    },
+    "binding_ref": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        }
+      }
+    },
+    "runner": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "required": [
+        "profile_id",
+        "kind",
+        "host_os",
+        "host_arch",
+        "image_id",
+        "image_version",
+        "run_id",
+        "run_attempt"
+      ],
+      "properties": {
+        "profile_id": {
+          "enum": [
+            "gha-windows-2025-amd64",
+            "gha-ubuntu-24.04-amd64"
+          ]
+        },
+        "kind": {
+          "const": "github-hosted"
+        },
+        "host_os": {
+          "enum": [
+            "windows",
+            "linux"
+          ]
+        },
+        "host_arch": {
+          "const": "amd64"
+        },
+        "image_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "image_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_attempt": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "host_os": {
+                "const": "windows"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "profile_id": {
+                "const": "gha-windows-2025-amd64"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "profile_id": {
+                "const": "gha-ubuntu-24.04-amd64"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "goos",
+        "goarch",
+        "goamd64",
+        "goarm64",
+        "cgo_enabled"
+      ],
+      "properties": {
+        "goos": {
+          "enum": [
+            "windows",
+            "linux"
+          ]
+        },
+        "goarch": {
+          "enum": [
+            "amd64",
+            "arm64"
+          ]
+        },
+        "goamd64": {
+          "enum": [
+            "v1",
+            null
+          ]
+        },
+        "goarm64": {
+          "enum": [
+            "v8.0",
+            null
+          ]
+        },
+        "cgo_enabled": {
+          "const": "0"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "goarch": {
+                "const": "amd64"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "goamd64": {
+                "const": "v1"
+              },
+              "goarm64": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "goamd64": {
+                "type": "null"
+              },
+              "goarm64": {
+                "const": "v8.0"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "go_toolchain_path": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "go_toolchain_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "toolchain_tree_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "normalized_environment": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "observed_go_environment": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "discarded_parent_environment_names": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "build_flags": {
+      "const": [
+        "-mod=readonly",
+        "-trimpath",
+        "-buildvcs=false",
+        "-compiler=gc",
+        "-pgo=off",
+        "-ldflags=-buildid="
+      ]
+    },
+    "profile_match": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "build_started": {
+      "const": false
+    },
+    "release_eligible": {
+      "const": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "VALIDATED_PRE_BUILD"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "profile_match": {
+            "const": true
+          },
+          "observed_go_environment": {
+            "type": "object"
+          },
+          "binding_ref": {
+            "type": "object"
+          },
+          "runner": {
+            "type": "object"
+          },
+          "normalized_environment": {
+            "type": "object"
+          },
+          "discarded_parent_environment_names": {
+            "type": "array"
+          },
+          "go_toolchain_path": {
+            "type": "string"
+          },
+          "go_toolchain_sha256": {
+            "type": "string"
+          },
+          "toolchain_tree_sha256": {
+            "type": "string"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "profile_match": {
+            "const": null
+          },
+          "observed_go_environment": {
+            "type": "null"
+          },
+          "binding_ref": {
+            "type": "null"
+          },
+          "runner": {
+            "type": "null"
+          },
+          "normalized_environment": {
+            "type": "null"
+          },
+          "discarded_parent_environment_names": {
+            "type": "null"
+          },
+          "go_toolchain_path": {
+            "type": "null"
+          },
+          "go_toolchain_sha256": {
+            "type": "null"
+          },
+          "toolchain_tree_sha256": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "binding": {
+      "type": "object",
+      "required": [
+        "schema",
+        "profile_id",
+        "runner_profile_id",
+        "runner_kind",
+        "host_os",
+        "host_arch",
+        "runner_image_id",
+        "runner_image_version",
+        "os_system_root",
+        "go_toolchain_version",
+        "go_toolchain_root",
+        "go_toolchain_path",
+        "go_toolchain_sha256",
+        "toolchain_tree_sha256",
+        "toolchain_files",
+        "distribution"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "ipmv.core.build-environment-binding.v1"
+        },
+        "profile_id": {
+          "const": "ipmv-core-purego-v1"
+        },
+        "runner_profile_id": {
+          "type": "string",
+          "enum": [
+            "gha-windows-2025-amd64",
+            "gha-ubuntu-24.04-amd64"
+          ]
+        },
+        "runner_kind": {
+          "const": "github-hosted"
+        },
+        "host_os": {
+          "enum": [
+            "windows",
+            "linux"
+          ]
+        },
+        "host_arch": {
+          "const": "amd64"
+        },
+        "runner_image_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runner_image_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "os_system_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "go_toolchain_version": {
+          "const": "go1.27.4"
+        },
+        "go_toolchain_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "go_toolchain_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "go_toolchain_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "toolchain_tree_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "toolchain_files": {
+          "type": "array",
+          "minItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "sha256",
+              "size_bytes"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "size_bytes": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)$"
+              }
+            }
+          }
+        },
+        "distribution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "url",
+            "archive_sha256",
+            "origin_proof_ref"
+          ],
+          "properties": {
+            "url": {
+              "type": "string",
+              "pattern": "^https://go\\.dev/dl/go1\\.27\\.4\\.(windows-amd64\\.zip|linux-amd64\\.tar\\.gz)$"
+            },
+            "archive_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "origin_proof_ref": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "host_os": {
+                "const": "windows"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "runner_profile_id": {
+                "const": "gha-windows-2025-amd64"
+              },
+              "os_system_root": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "runner_profile_id": {
+                "const": "gha-ubuntu-24.04-amd64"
+              },
+              "os_system_root": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "file_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        }
+      }
+    }
+  }
+}

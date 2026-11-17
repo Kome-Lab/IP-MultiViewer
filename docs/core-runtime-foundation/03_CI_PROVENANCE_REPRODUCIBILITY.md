@@ -17,7 +17,7 @@ workflow_dispatchはdefault branchへの配置等のGitHub条件も必要。今�
 
 ## 2. Jobの段階
 
-Dependency Validation → 明示したCore packagesのStatic Source Analysis / Unit Tests → Windows/Linux compile → artifact SBOM / License / Advisory report → hashとunsigned evidence candidate。
+Environment Profile / Toolchain実体照合 → Dependency Validation → 明示したCore packagesのStatic Source Analysis / Unit Tests → Windows/Linux compile → artifact SBOM / License / Advisory report → hashとunsigned evidence candidate。
 Integration Testsは追加の隔離環境承認がある場合だけで、未実行をPASSにしない。build-targets.jsonは現時点UNASSIGNED。実装入口・unit/integration packageを承認済みexact Commitへ結合してから有効化する。arm64はcross compilation候補であり、native実行/Windows Desktop可用性の実証ではない。
 既存./...、Desktop QA、Media/GPU、PoC、Service/DB操作を呼び出すscriptへ接続しない。未来のintegration実行にはDB等の対象・破棄条件・許可を別途特定する。
 
@@ -62,15 +62,41 @@ unsigned binary → 保護署名処理 → signed binaryは別bytesであり、u
 | 項目 | 方針 |
 | --- | --- |
 | Toolchain/graph | Go1.27.4 exact、readonly、tuple/whole graph hash一致、tool graphを分離 |
-| flags | -trimpath -buildvcs=false -ldflags=-buildid=、CGO_ENABLED=0、-mod=readonly |
+| flags | -trimpath -buildvcs=false -compiler=gc -pgo=off -ldflags=-buildid=、CGO_ENABLED=0、-mod=readonly |
 | source path/VCS | pathを除去。VCS無記録分は外部provenanceのexact Commit/clean treeで補う |
 | timestamps | 実時刻をbinaryへ埋込まない。build時刻は外部証跡。package時刻は承認source commit基準 |
 | module cache | CI cache初期無効。承認後もsumdb/lock/hash確認、未信頼PR cacheと署名工程を共有しない |
 | OS/SDK | image family+実versionを記録。再現検証時は同一immutable VM/image/SDK/tool patchが必要 |
-| env | allowlist記録のみ。secret/pathなど不要入力を記録・埋込まない |
+| env | 親環境のcopy禁止。固定/導出allowlistを子Process用に構成し、完全環境・Toolchain/Binding hashをpre-build Manifestへ記録。秘密は渡さない |
 | packaging | sorted file list、固定timestamp/permissions、固定圧縮実装/level。未実装・未実測 |
 | 検証 | 独立clean環境で同じinputを2回buildしてunsigned hash比較。差分は調査し署名timestamp差と分離 |
 
 Build ID除去は万能ではない。Go binary/OS archごとの再現性、signature timestamp、ZIPの差分は未検証。今回は再現可能Build達成を宣言しない。
 
 CIのjob timeout/処理timeout/保持14日とPython3.14.10は将来実行用の固定候補で、製品Runtimeのtimeout・保持や技術採用判断を上書きしない。対象profileはtracked fileに自分自身のCommitを埋め込まず、外部の保護Commitとprofile SHA-256で結合する。
+
+## 9. SEC-03 Compiler Environment Gate
+
+build-environment-profile.jsonは固定したpure-Go Core用の定義。Schema、tool-lockのprofile SHA-256、保護されたIPMV_CORE_BUILD_PROFILE_SHA256を一致させる。Profileのgo_toolchain_path / sha256は承認済bindingへの参照であり、未確定値を成功値やゼロhashで埋めない。
+
+Workflowは各jobで最初のGo処理前にenvironment stageを実施する。順序は、固定hosted runnerとOS実測の識別、承認済bindingからのToolchain全tree/launcher/compile/link/asm照合、解決Profile・子環境の構成、allowlist/denylistとPATH検査、固定dependency digestの照合、最小go env probe、pre-build環境Manifest保存、実行Gate開放。通常Go呼出し時も実体と環境を再照合する。
+
+保護変数IPMV_CORE_BUILD_BINDINGS_SHA256は登録済runner_profile_idから承認済binding bytesのSHA-256へのmap。参照先はci/core-runtime/environment-bindings/<登録ID>.json。今回、CIの実測bindingや保護変数は登録していない。欠落/未承認/不一致はGoやBuild開始前にBLOCKED。live環境をhashしただけで期待値へ採用するtrust-on-first-useは禁止。
+
+BindingにはGo絶対path、launcher SHA-256、全fileのpath/size/SHA-256 inventory、tree digest、公式配布物SHA、出所証跡、host OS/arch、runner image ID/version、OS rootを含める。tree digestはpathで整列したinventoryをsort_keys=True / compact JSON / ensure_ascii=TrueでencodeしたbytesのSHA-256。承認者は取得済み公式archiveの由来と正規の期待inventoryを独立確認する。自己申告JSONだけでToolchainを信頼しない。
+
+Go実行はbindingの絶対pathだけ。GOTOOLCHAIN=local、GOENV=off、GOWORK=off、Go1.27.4を維持。Module最低要件1.26.5と混同しない。Go1.27.4のcfg.EnvFile/MkEnvではGOENV=offはprobeで空文字、GOWORK=offはoffと報告される。inactive側のarch変数はprobeしない。
+
+親環境を変更せず、子環境を空から構成する。GOAMD64=v1 / GOARM64=v8.0は対象archだけに設定。GOEXPERIMENT空は固定Toolchainの既定値を選択し、親の実験値を継承しない。Go/env file・GOCACHEPROG・proxy/private設定等も制御する。GOPATH/GOMODCACHE/GOCACHE/TMP/TEMP/HOME/USERPROFILE等は専用Output Rootのbundle外state directoryへ固定し、user cache/configを利用しない。
+
+PATHは検証済GOROOT/binだけ。CC/CXX/CGO flags/pkg-config/MSVC/Windows SDK/MinGW/MSYSTEM/CL/INCLUDE/LIB/LIBPATHや他の未許可環境を子へ渡さない。WindowsのSystemRoot/WINDIRはkernel APIから取得してbindingと照合し、親値を採用しない。Native Compilerを自動探索せず、CGO_ENABLED=0 / gc compilerを維持する。CGO無効はOS・filesystem・Toolchain・stdlib等への依存が消えたことを意味しない。Media/GPU等のNative Workerは別Profile・別WorkflowでありPhase3-A BLOCKEDを維持する。
+
+GitHub-hosted Windows / Linuxを別runner profileへ結合する。Self-hostedとlocalは別のBLOCKED Profileであり、今回の定義で自動採用しない。固定Workflow/手動承認/正確Commitの既存Gate、外部承認hash、OSからの測定、実file照合を併用する。RUNNER_*やJSON値の一致だけでhost真正性やOS侵害耐性を認定しない。Python/Git/setup actionsのbootstrapは独立した信頼境界で、権限・Secretsを拡張しない。
+
+環境Manifestはbuild-environment-<stage>.jsonとしてBuild開始前に新規確定し、profile hash・binding ref・全正常化環境・観測したGo env・host/target・source Commit・dependency digestを保持する。status=VALIDATED_PRE_BUILDは将来そのpreflightが成功したときだけ出力し、Build/製品適合/署名PASSとはしない。今回の資料例はNOT_EXECUTED_EXAMPLE。
+
+全環境Manifestとcommands-environment.jsonはSEC-02の固定payload集合へ含め、seal後は更新しない。build-evidence-indexの既存reports RefからD15-A06 build_provenanceへ接続し、closed Release Manifestに新しいfieldを追加しない。古いrun/target/source/binding/hashの再読込も拒否する。実体読み取りだけを承認済read-only Toolchain Rootへ限定し、SEC-01のArtifact/metadataの許可Rootを広げない。
+
+Toolchain Rootとbuilder/private Output Rootは検証から使用完了まで他writerが変更しない前提。再parse point/Handle/hashの再照合は差替検出であり、悪意ある同Token processやadministrator/OS侵害に対する完全防御ではない。実Windows/Linuxでのfile identity/ACL/Node→Python→Go環境/Loader動作、image binding、Go probe、Build、reproducibilityは未実証。
+
+今回の作業は定義・限定補正・静的確認だけ。Build/Test/CI/Scan/Commit/Pushの許可は追加しない。

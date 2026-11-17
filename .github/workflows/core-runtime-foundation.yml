@@ -33,6 +33,8 @@ env:
   IPMV_CORE_EXECUTION_PERMIT: SEPARATELY_APPROVED_NON_GPU_CORE
   IPMV_APPROVED_SOURCE_COMMIT: ${{ vars.IPMV_CORE_APPROVED_COMMIT }}
   IPMV_CORE_TARGETS_SHA256: ${{ vars.IPMV_CORE_TARGETS_SHA256 }}
+  IPMV_BUILD_PROFILE_SHA256: ${{ vars.IPMV_CORE_BUILD_PROFILE_SHA256 }}
+  IPMV_BUILD_BINDINGS_SHA256: ${{ vars.IPMV_CORE_BUILD_BINDINGS_SHA256 }}
 jobs:
   dependency-validation:
     if: >-
@@ -42,6 +44,8 @@ jobs:
       vars.IPMV_CORE_APPROVED_COMMIT == github.sha &&
       vars.IPMV_CORE_EXECUTION_ENABLED == 'SEPARATELY_APPROVED_NON_GPU_CORE'
     runs-on: ubuntu-24.04
+    env:
+      IPMV_BUILD_RUNNER_PROFILE: gha-ubuntu-24.04-amd64
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -57,6 +61,10 @@ jobs:
         with:
           python-version: "3.14.10"
           check-latest: false
+      - name: Verify toolchain and normalized environment before Go work
+        run: >-
+          python scripts/core-runtime/foundation.py environment --goos linux
+          --goarch amd64 --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-dependency
       - name: Validate exact graph without mutation
         run: >-
           python scripts/core-runtime/foundation.py dependency
@@ -87,9 +95,13 @@ jobs:
         include:
           - runner: windows-2025
             goos: windows
+            environment_profile: gha-windows-2025-amd64
           - runner: ubuntu-24.04
             goos: linux
+            environment_profile: gha-ubuntu-24.04-amd64
     runs-on: ${{ matrix.runner }}
+    env:
+      IPMV_BUILD_RUNNER_PROFILE: ${{ matrix.environment_profile }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -105,6 +117,10 @@ jobs:
         with:
           python-version: "3.14.10"
           check-latest: false
+      - name: Verify toolchain and normalized environment before Go work
+        run: >-
+          python scripts/core-runtime/foundation.py environment --goos ${{ matrix.goos }}
+          --goarch amd64 --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-checks
       - name: Static source analysis (approved packages only)
         run: >-
           python scripts/core-runtime/foundation.py static --goos ${{ matrix.goos }}
@@ -147,16 +163,22 @@ jobs:
           - runner: windows-2025
             goos: windows
             goarch: amd64
+            environment_profile: gha-windows-2025-amd64
           - runner: windows-2025
             goos: windows
             goarch: arm64
+            environment_profile: gha-windows-2025-amd64
           - runner: ubuntu-24.04
             goos: linux
             goarch: amd64
+            environment_profile: gha-ubuntu-24.04-amd64
           - runner: ubuntu-24.04
             goos: linux
             goarch: arm64
+            environment_profile: gha-ubuntu-24.04-amd64
     runs-on: ${{ matrix.runner }}
+    env:
+      IPMV_BUILD_RUNNER_PROFILE: ${{ matrix.environment_profile }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -172,6 +194,10 @@ jobs:
         with:
           python-version: "3.14.10"
           check-latest: false
+      - name: Verify toolchain and normalized environment before Go work
+        run: >-
+          python scripts/core-runtime/foundation.py environment --goos ${{ matrix.goos }}
+          --goarch ${{ matrix.goarch }} --output-root "${{ runner.temp }}/ipmv-core-${{ github.run_id }}-${{ github.run_attempt }}" --output core-output
       - name: Verify target dependency graph
         run: >-
           python scripts/core-runtime/foundation.py dependency --goos ${{ matrix.goos }}
