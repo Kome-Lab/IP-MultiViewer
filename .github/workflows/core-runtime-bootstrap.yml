@@ -1,0 +1,479 @@
+# CI-0 definition only. C placement adopted; not deployed or authorized to execute.
+# Future main placement is ONE file; never merge the source branch as a prerequisite.
+name: Core Runtime CI-0 Bootstrap (No-Go, manual)
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_ci0_approved:
+        description: Separate CI-0 execution authorization exists
+        type: boolean
+        required: true
+        default: false
+      scope:
+        description: No implicit downgrade between these scopes
+        type: choice
+        required: true
+        default: not-authorized
+        options:
+          - not-authorized
+          - inventory-only
+          - binding-reconcile
+      source_commit:
+        description: Exact approved data commit; never an execution ref
+        type: string
+        required: true
+        default: ""
+      authorization_ref:
+        description: Exact protected permit ID; not a URL or command
+        type: string
+        required: true
+        default: ""
+permissions:
+  contents: read
+concurrency:
+  group: ipmv-ci0-bootstrap
+  cancel-in-progress: false
+jobs:
+  ci0:
+    name: CI-0 metadata only; independent reconciliation required
+    # Only github / inputs / vars are used here. Environment vars are too late.
+    # Missing JSON short-circuits; invalid JSON fails expression evaluation.
+    # Exact types, expiry, duplicate/unknown fields are checked before any GET.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.confirm_ci0_approved == true &&
+      github.repository_id == '1275450854' &&
+      github.repository == 'Kome-Lab/IP-MultiViewer' &&
+      github.ref == 'refs/heads/main' &&
+      github.workflow_ref == 'Kome-Lab/IP-MultiViewer/.github/workflows/core-runtime-bootstrap.yml@refs/heads/main' &&
+      inputs.source_commit == '8e584ec8c955415cd216bd7bfffd11df45690371' &&
+      inputs.authorization_ref != '' &&
+      (inputs.scope == 'inventory-only' || inputs.scope == 'binding-reconcile') &&
+      vars.IPMV_CI0_CONTROL_JSON != '' && vars.IPMV_CI0_CONTROL_SHA256 != '' &&
+      vars.IPMV_CI0_PERMIT_JSON != '' && vars.IPMV_CI0_PERMIT_SHA256 != '' &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).status == 'APPROVED_ACTIVE' &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).repository_id == '1275450854' &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).source_commit == inputs.source_commit &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).workflow_content_sha256 != '' &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).approval_identity.subject_id != '' &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).approval_identity.approval_ref != '' &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).environment_protection_ref != '' &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).permission_evidence_ref != '' &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).bootstrap_runtime_ref != '' &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).clock_policy_ref != '' &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).issued_at != '' && fromJSON(vars.IPMV_CI0_CONTROL_JSON).expires_at != '' &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).revocation_state == 'VALID' &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).workflow_sha == github.workflow_sha &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).execution_sha == github.sha &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).execution_ref == github.ref &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).environment_name == 'ipmv-ci0-approval' &&
+      fromJSON(vars.IPMV_CI0_CONTROL_JSON).environment_state == 'VERIFIED_PROTECTED' &&
+      fromJSON(vars.IPMV_CI0_PERMIT_JSON).status == 'APPROVED_ACTIVE' &&
+      fromJSON(vars.IPMV_CI0_PERMIT_JSON).repository_id == '1275450854' &&
+      fromJSON(vars.IPMV_CI0_PERMIT_JSON).source_commit == inputs.source_commit &&
+      fromJSON(vars.IPMV_CI0_PERMIT_JSON).workflow_sha == github.workflow_sha &&
+      fromJSON(vars.IPMV_CI0_PERMIT_JSON).control_digest == vars.IPMV_CI0_CONTROL_SHA256 &&
+      fromJSON(vars.IPMV_CI0_PERMIT_JSON).actor_id == github.actor_id &&
+      fromJSON(vars.IPMV_CI0_PERMIT_JSON).issued_at != '' && fromJSON(vars.IPMV_CI0_PERMIT_JSON).expires_at != '' &&
+      fromJSON(vars.IPMV_CI0_PERMIT_JSON).ci1_execution_authorized == false &&
+      fromJSON(vars.IPMV_CI0_PERMIT_JSON).revocation_state == 'VALID' &&
+      fromJSON(vars.IPMV_CI0_PERMIT_JSON).authorization_ref == inputs.authorization_ref &&
+      fromJSON(vars.IPMV_CI0_PERMIT_JSON).scope == inputs.scope &&
+      fromJSON(vars.IPMV_CI0_PERMIT_JSON).run_number == github.run_number &&
+      fromJSON(vars.IPMV_CI0_PERMIT_JSON).run_attempt == github.run_attempt &&
+      (inputs.scope == 'inventory-only' ||
+       (vars.IPMV_CI0_BINDING_JSON != '' && vars.IPMV_CI0_BINDING_SHA256 != ''))
+    runs-on: windows-2025
+    timeout-minutes: 10
+    # Future fixed environment name; this line alone does NOT establish protection.
+    environment: ipmv-ci0-approval
+    steps:
+      - name: Validate CI-0 scope, collect metadata, seal one evidence envelope
+        # Provider shell is the bootstrap trust root. No child program is launched.
+        shell: pwsh -NoLogo -NoProfile -NonInteractive -File "{0}"
+        env:
+          PATH: C:\Program Files\PowerShell\7
+          PSModulePath: C:\Program Files\PowerShell\7\Modules
+          CI0_REPOSITORY: ${{ github.repository }}
+          CI0_REPOSITORY_ID: ${{ github.repository_id }}
+          CI0_REF: ${{ github.ref }}
+          CI0_SHA: ${{ github.sha }}
+          CI0_WORKFLOW_REF: ${{ github.workflow_ref }}
+          CI0_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          CI0_EVENT: ${{ github.event_name }}
+          CI0_RUN_ID: ${{ github.run_id }}
+          CI0_RUN_NUMBER: ${{ github.run_number }}
+          CI0_RUN_ATTEMPT: ${{ github.run_attempt }}
+          CI0_JOB_KEY: ${{ github.job }}
+          CI0_ACTOR_ID: ${{ github.actor_id }}
+          CI0_TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          CI0_ACTOR: ${{ github.actor }}
+          CI0_RUNNER_NAME: ${{ runner.name }}
+          CI0_RUNNER_OS: ${{ runner.os }}
+          CI0_RUNNER_ARCH: ${{ runner.arch }}
+          CI0_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          CI0_CONFIRM: ${{ inputs.confirm_ci0_approved }}
+          CI0_SCOPE: ${{ inputs.scope }}
+          CI0_SOURCE: ${{ inputs.source_commit }}
+          CI0_AUTH_REF: ${{ inputs.authorization_ref }}
+          CI0_CONTROL: ${{ vars.IPMV_CI0_CONTROL_JSON }}
+          CI0_CONTROL_DIGEST: ${{ vars.IPMV_CI0_CONTROL_SHA256 }}
+          CI0_PERMIT: ${{ vars.IPMV_CI0_PERMIT_JSON }}
+          CI0_PERMIT_DIGEST: ${{ vars.IPMV_CI0_PERMIT_SHA256 }}
+          CI0_BINDING: ${{ vars.IPMV_CI0_BINDING_JSON }}
+          CI0_BINDING_DIGEST: ${{ vars.IPMV_CI0_BINDING_SHA256 }}
+          CI0_CONTENT_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference='Stop'
+          $ProgressPreference='SilentlyContinue'
+          $PSModuleAutoLoadingPreference='None'
+          Set-StrictMode -Version Latest
+          $repo='Kome-Lab/IP-MultiViewer'
+          $repoId='1275450854'
+          $source='8e584ec8c955415cd216bd7bfffd11df45690371'
+          $workflow='Kome-Lab/IP-MultiViewer/.github/workflows/core-runtime-bootstrap.yml@refs/heads/main'
+          $profile='d21637ef1106cef5d92181e27362221f41dd7fd973fcb1957631fb1be60689b1'
+          $pins=@(
+          @{path='.github/workflows/core-runtime-foundation.yml';size='12072';sha256='8891c4bf4d26f1f6d17571f16d648880c45293467d4e9477f6c211f20c057881';blob='43c68552a2813aecf00e7edf9bc31649210563d7'},
+          @{path='ci/core-runtime/build-environment-profile.json';size='6739';sha256=$profile;blob='f3603746fbfcebfc091508051cd60c8608fc36b3'}
+          )
+          $utf8=[Text.UTF8Encoding]::new($false,$true)
+          $script:reason='INTERNAL_OR_PROVIDER_ERROR'
+          $script:phase='ADMISSION'
+          $script:getCount=0
+          $inv=[Globalization.CultureInfo]::InvariantCulture
+          $exitCode=1
+          $client=$null
+          $handler=$null
+          $ra=$env:CI0_RUN_ATTEMPT;$ws=$env:CI0_WORKFLOW_SHA;$bj=$env:CI0_BINDING;$ri=$env:CI0_RUN_ID;$bd=$env:CI0_BINDING_DIGEST;$sc=$env:CI0_SCOPE;$re=$env:CI0_RUNNER_ENVIRONMENT;$cd=$env:CI0_CONTROL_DIGEST;$cj=$env:CI0_CONTROL;$nm=$env:CI0_RUNNER_NAME;$ac=$env:CI0_ACTOR;$rn=$env:CI0_RUN_NUMBER;$ar=$env:CI0_AUTH_REF;$rf=$env:CI0_REF;$sh=$env:CI0_SHA
+          $ro=$env:CI0_RUNNER_OS;$rc=$env:CI0_RUNNER_ARCH;$rp=$env:CI0_REPOSITORY;$ai=$env:CI0_ACTOR_ID
+          function Reject([string]$Code){$script:reason=$Code;throw [InvalidOperationException]::new($Code)}
+          function N([bool]$OK,[string]$Code){if(-not $OK){Reject $Code}}
+          function Text($v,[string]$pattern,[int]$limit=256){
+          N ($v -is [string]) 'STRING_TYPE'
+          N ($v.Length -gt 0 -and $v.Length -le $limit) 'STRING_LENGTH'
+          N ([Text.RegularExpressions.Regex]::IsMatch($v,('\A(?:'+$pattern+')\z'),
+          [Text.RegularExpressions.RegexOptions]::CultureInvariant,[TimeSpan]::FromMilliseconds(100))) 'STRING_VALUE'
+          }
+          function U64($v){
+          Text $v '^[1-9][0-9]*$' 20
+          [ulong]$n=0
+          N ([ulong]::TryParse($v,[Globalization.NumberStyles]::None,$inv,[ref]$n)) 'U64_OVERFLOW'
+          }
+          function Ref($v){Text $v '^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$' 192}
+          function Root($p){
+          Text $p '[A-Za-z]:[\\/][^:;*?"<>|\x00-\x1F]+' 32767
+          N (-not [Text.RegularExpressions.Regex]::IsMatch($p,'[. ](?:[\\/]|\z)')) 'MODULE_PATH'
+          [IO.Path]::GetFullPath($p).TrimEnd([char[]]'\/')
+          }
+          function Modules{
+          $r=Root 'C:\Program Files\PowerShell\7\Modules'
+          $rs=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+          foreach($f in 'MyDocuments','ProgramFiles'){
+          $p=[Environment]::GetFolderPath($f,'DoNotVerify')
+          foreach($n in 'PowerShell','WindowsPowerShell'){[void]$rs.Add((Root "$p\$n\Modules"))}
+          }
+          [void]$rs.Add($r)
+          [void]$rs.Add((Root "$([Environment]::SystemDirectory)\WindowsPowerShell\v1.0\Modules"))
+          foreach($p in $env:PSModulePath.Split(';')){N ($rs.Contains((Root $p))) 'UNKNOWN_MODULE_ROOT'}
+          $env:PSModulePath=$r
+          N ($env:PSModulePath -ceq $r) 'MODULE_NORMALIZATION'
+          }
+          function Fields([string]$s){foreach($x in $s.Split(',')){if($x.Length){$x}}}
+          function Shape($v,[string]$s,[string]$o='',[string]$f='',[string]$n=''){
+          N ($v -is [Collections.IDictionary]) 'OBJECT_TYPE'
+          $keys=@(Fields ($s+','+$o+','+$f+','+$n))
+          N ($v.get_Count() -eq $keys.Count) 'UNKNOWN_OR_MISSING_FIELD'
+          foreach($k in $keys){N ($v.ContainsKey($k)) 'UNKNOWN_OR_MISSING_FIELD'}
+          foreach($k in (Fields $s)){N ($v[$k] -is [string]) 'STRING_TYPE'}
+          foreach($k in (Fields $o)){N ($v[$k] -is [Collections.IDictionary]) 'OBJECT_TYPE'}
+          foreach($k in (Fields $f)){N ($v[$k] -is [bool] -and $v[$k] -eq $false) 'BOOLEAN_MUST_BE_FALSE'}
+          }
+          function Match($v,$expected){
+          foreach($k in $expected.Keys){
+          $want=$expected[$k]
+          if($null -eq $want){N ($null -eq $v[$k]) 'FIELD_MISMATCH'}
+          elseif($want -is [string]){N ($v[$k] -is [string] -and $v[$k] -ceq $want) 'FIELD_MISMATCH'}
+          else{Reject 'INVALID_INTERNAL_EXPECTATION'}
+          }
+          }
+          function Hex([byte[]]$b){[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($b)).ToLowerInvariant()}
+          function JsonValue([System.Text.Json.JsonElement]$e,[bool]$integers){
+          switch($e.ValueKind.ToString()){
+          'Object' {
+          $d=[Collections.Generic.Dictionary[string,object]]::new([StringComparer]::Ordinal)
+          foreach($p in $e.EnumerateObject()){
+          N (-not $d.ContainsKey($p.Name)) 'DUPLICATE_JSON_FIELD'
+          $d.Add($p.Name,(JsonValue $p.Value $integers))
+          }
+          return ,$d
+          }
+          'Array' {Reject 'JSON_ARRAY_FORBIDDEN'}
+          'String' {return $e.GetString()}
+          'True' {return $true}
+          'False' {return $false}
+          'Null' {return $null}
+          'Number' {
+          N $integers 'JSON_NUMBER_USE_U64_STRING'
+          [long]$n=0;N ($e.TryGetInt64([ref]$n)) 'JSON_FLOAT_OR_OVERFLOW';return $n
+          }
+          default {Reject 'JSON_KIND'}
+          }
+          }
+          function ReadJson([byte[]]$b,[bool]$integers=$false){
+          N ($b.Length -gt 0 -and $b.Length -le 262144) 'JSON_SIZE'
+          $opt=[System.Text.Json.JsonDocumentOptions]::new()
+          $opt.MaxDepth=24;$opt.AllowTrailingCommas=$false
+          $opt.CommentHandling=[System.Text.Json.JsonCommentHandling]::Disallow
+          $doc=[System.Text.Json.JsonDocument]::Parse($utf8.GetString($b),$opt)
+          try{return ,(JsonValue $doc.RootElement $integers)}finally{$doc.Dispose()}
+          }
+          function Record([string]$text,[string]$digest){
+          Text $digest '^[0-9a-f]{64}$' 64
+          N ($text.Length -gt 0 -and $text.Length -le 24576) 'RECORD_MISSING_OR_LARGE'
+          $b=$utf8.GetBytes($text);N ((Hex $b) -ceq $digest) 'RECORD_DIGEST'
+          return ,(ReadJson $b)
+          }
+          function Window($issued,$expires){
+          $p='^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?Z$'
+          Text $issued $p 40;Text $expires $p 40
+          $style=[Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+          $a=[DateTimeOffset]::Parse($issued,$inv,$style)
+          $z=[DateTimeOffset]::Parse($expires,$inv,$style)
+          $now=[DateTimeOffset]::UtcNow
+          N ($a -le $now -and $now -lt $z -and $a -lt $z) 'EXPIRED_OR_NOT_YET_VALID'
+          }
+          function Approval($a){
+          Shape $a 'provider,subject_id,approval_ref'
+          Match $a @{provider='GitHub-admin-control-plane'}
+          U64 $a['subject_id'];Ref $a['approval_ref']
+          }
+          function Permission($p){
+          Shape $p 'contents,all_other_permissions' '' 'oidc,product_secrets,signing'
+          Match $p @{contents='read';all_other_permissions='none'}
+          }
+          function Canonical($v){
+          if($null -eq $v){return 'null'}
+          if($v -is [bool]){if($v){return 'true'};return 'false'}
+          if($v -is [string]){return [System.Text.Json.JsonSerializer]::Serialize([object]$v,[type][string],[System.Text.Json.JsonSerializerOptions]::new())}
+          if($v -is [Collections.IDictionary]){
+          [string[]]$keys=@($v.Keys);[Array]::Sort($keys,[StringComparer]::Ordinal)
+          $parts=[Collections.Generic.List[string]]::new()
+          foreach($k in $keys){$parts.Add((Canonical $k)+':'+(Canonical $v[$k]))}
+          return '{'+[string]::Join(',',$parts)+'}'
+          }
+          if($v -is [Array]){
+          $parts=[Collections.Generic.List[string]]::new()
+          foreach($x in $v){$parts.Add((Canonical $x))}
+          return '['+[string]::Join(',',$parts)+']'
+          }
+          Reject 'NON_CANONICAL_TYPE'
+          }
+          function SourceRead($pin){
+          N ($script:getCount -lt 8) 'GET_BUDGET';$script:getCount++
+          $uri='https://api.github.com/repos/Kome-Lab/IP-MultiViewer/contents/'+$pin.path+'?ref='+$source
+          $req=[Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get,$uri)
+          $req.Headers.Accept.ParseAdd('application/vnd.github+json')
+          $req.Headers.UserAgent.ParseAdd('IPMultiViewer-CI0/1')
+          $req.Headers.Add('X-GitHub-Api-Version','2022-11-28')
+          $req.Headers.Authorization=[Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer',$env:CI0_CONTENT_TOKEN)
+          $cts=[Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(20))
+          $resp=$null;$stream=$null;$body=[IO.MemoryStream]::new()
+          try{
+          $resp=$client.SendAsync($req,[Net.Http.HttpCompletionOption]::ResponseHeadersRead,$cts.Token).GetAwaiter().GetResult()
+          N ([int]$resp.StatusCode -eq 200 -and $resp.RequestMessage.RequestUri.AbsoluteUri -ceq $uri) 'HTTP_FAILURE_OR_REDIRECT'
+          $length=$resp.Content.Headers.ContentLength
+          if($null -ne $length){N ($length -gt 0 -and $length -le 262144) 'HTTP_SIZE'}
+          N ($resp.Content.Headers.ContentType.MediaType -ceq 'application/json') 'HTTP_TYPE'
+          $stream=$resp.Content.ReadAsStreamAsync($cts.Token).GetAwaiter().GetResult()
+          $buffer=[byte[]]::new(8192)
+          while($true){
+          $n=$stream.ReadAsync($buffer,0,$buffer.Length,$cts.Token).GetAwaiter().GetResult()
+          if($n -eq 0){break};N ($body.Length+$n -le 262144) 'HTTP_SIZE';$body.Write($buffer,0,$n)
+          }
+          if($null -ne $length){N ($body.Length -eq $length) 'HTTP_TRUNCATED'}
+          $d=ReadJson $body.ToArray() $true
+          Shape $d 'name,path,sha,url,html_url,git_url,download_url,type,content,encoding' '_links' '' 'size'
+          Shape $d['_links'] 'self,git,html'
+          Match $d @{name=$pin.path.Split('/')[-1];path=$pin.path;sha=$pin.blob;type='file';encoding='base64'}
+          N ($d['size'] -is [long] -and $d['size'] -gt 0 -and $d['size'] -le 1048576) 'SOURCE_SIZE'
+          N ($d['size'].ToString($inv) -ceq $pin.size) 'SOURCE_SIZE'
+          Text $d['content'] '^[A-Za-z0-9+/=\r\n]+$' 262144
+          $bytes=[Convert]::FromBase64String($d['content'])
+          N ($bytes.Length -eq $d['size'] -and $bytes.Length -le 1048576) 'SOURCE_DECODE_SIZE'
+          N ((Hex $bytes) -ceq $pin.sha256) 'SOURCE_HASH'
+          return @{path=$pin.path;size=$pin.size;sha256=$pin.sha256;git_blob=$pin.blob;result='MATCH'}
+          }finally{
+          if($null -ne $stream){$stream.Dispose()};if($null -ne $resp){$resp.Dispose()}
+          $body.Dispose();$req.Dispose();$cts.Dispose()
+          }
+          }
+          $ev=@{
+          schema='ipmv.stage0c.ci0-evidence.v1';status='FAILED';reason=$null;phase=$null
+          repository_id=$repoId;source_commit=$source;bootstrap_workflow_sha=$null
+          bootstrap_expected_content_sha256=$null;bootstrap_observed_content_sha256=$null
+          execution_ref=$null;execution_sha=$null;run_id=$null;run_number=$null;run_attempt=$null
+          job_id=$null;job_key=$null;authorization_ref=$null;scope=$null;control_digest=$null
+          runner_observation=$null;binding_ref=$null;permission_evidence_ref=$null;environment_evidence_ref=$null
+          independent_reconciliation_ref=$null;independent_reconciliation='REQUIRED_NOT_PERFORMED'
+          source_checks=@();check_status=@{
+          dispatch='NOT_ATTEMPTED';repository='NOT_ATTEMPTED';bootstrap_revision='NOT_ATTEMPTED'
+          approved_revision='NOT_ATTEMPTED';hosted_runner='NOT_ATTEMPTED';os_image_shell='NOT_ATTEMPTED'
+          binding='NOT_ATTEMPTED';permission='NOT_ATTEMPTED';environment='NOT_ATTEMPTED'
+          }
+          get_count='0';observed_at=$null;go_executed=$false;product_artifact_generated=$false
+          ci0_pass=$false;ci1_execution_authorized=$false;release_eligible=$false
+          }
+          $checks=$ev.check_status
+          try{
+          N ($env:CI0_EVENT -ceq 'workflow_dispatch' -and $env:CI0_CONFIRM -ceq 'true') 'DISPATCH_DENIED'
+          N ($sc -ceq 'inventory-only' -or $sc -ceq 'binding-reconcile') 'SCOPE'
+          N ($env:CI0_SOURCE -ceq $source) 'SOURCE_COMMIT'
+          Ref $ar
+          foreach($v in @($ri,$rn,$ra,$ai)){U64 $v}
+          N ($env:CI0_JOB_KEY -ceq 'ci0') 'JOB_KEY'
+          $ev.run_id=$ri;$ev.run_number=$rn;$ev.run_attempt=$ra
+          $ev.job_key='ci0';$ev.authorization_ref=$ar;$ev.scope=$sc
+          $checks.dispatch='MATCH'
+          N ($env:CI0_REPOSITORY_ID -ceq $repoId -and $rp -ceq $repo) 'REPOSITORY'
+          $checks.repository='MATCH'
+          N ($rf -ceq 'refs/heads/main' -and $env:CI0_WORKFLOW_REF -ceq $workflow) 'WORKFLOW_REF'
+          Text $sh '^[0-9a-f]{40}$' 40;Text $ws '^[0-9a-f]{40}$' 40
+          N ($ws -cne $source) 'BOOTSTRAP_SOURCE_SHA_CONFUSION'
+          $ev.bootstrap_workflow_sha=$ws;$ev.execution_ref=$rf;$ev.execution_sha=$sh
+          $checks.bootstrap_revision='MATCH'
+          $c=Record $cj $cd
+          Shape $c 'schema,status,repository_id,workflow_identity,workflow_sha,workflow_content_sha256,source_commit,execution_ref,execution_sha,environment_name,environment_state,environment_protection_ref,permission_evidence_ref,bootstrap_runtime_ref,clock_policy_ref,revocation_state,revocation_revision,issued_at,expires_at' 'permission_profile,approval_identity'
+          Match $c @{schema='ipmv.stage0c.ci0-control.v1';status='APPROVED_ACTIVE';repository_id=$repoId;workflow_identity=$workflow
+          workflow_sha=$ws;source_commit=$source;execution_ref=$rf;execution_sha=$sh
+          environment_name='ipmv-ci0-approval';environment_state='VERIFIED_PROTECTED';revocation_state='VALID'}
+          Text $c['workflow_content_sha256'] '^[0-9a-f]{64}$' 64
+          U64 $c['revocation_revision'];Window $c['issued_at'] $c['expires_at']
+          foreach($k in @('environment_protection_ref','permission_evidence_ref','bootstrap_runtime_ref','clock_policy_ref')){Ref $c[$k]}
+          Approval $c['approval_identity'];Permission $c['permission_profile']
+          $p=Record $env:CI0_PERMIT $env:CI0_PERMIT_DIGEST
+          Shape $p 'schema,status,authorization_ref,repository_id,workflow_sha,workflow_content_sha256,source_commit,execution_ref,execution_sha,scope,run_number,run_attempt,actor_id,actor_login,control_digest,issued_at,expires_at,revocation_state' '' 'ci1_execution_authorized' 'binding_digest,binding_revocation_revision'
+          Match $p @{schema='ipmv.stage0c.ci0-execution-permit.v1';status='APPROVED_ACTIVE';authorization_ref=$ar
+          repository_id=$repoId;workflow_sha=$ws;workflow_content_sha256=$c['workflow_content_sha256']
+          source_commit=$source;execution_ref=$rf;execution_sha=$sh;scope=$sc
+          run_number=$rn;run_attempt=$ra;actor_id=$ai
+          actor_login=$ac;control_digest=$cd;revocation_state='VALID'}
+          U64 $p['run_number'];U64 $p['run_attempt'];U64 $p['actor_id']
+          Text $p['actor_login'] '^[A-Za-z0-9][A-Za-z0-9-]*$' 100
+          N ($env:CI0_TRIGGERING_ACTOR -ceq $ac) 'TRIGGERING_ACTOR'
+          Window $p['issued_at'] $p['expires_at']
+          if($sc -ceq 'inventory-only'){
+          Match $p @{binding_digest=$null;binding_revocation_revision=$null}
+          N ([string]::IsNullOrEmpty($bj) -and [string]::IsNullOrEmpty($bd)) 'INVENTORY_BINDING_CONFLICT'
+          }else{
+          Text $p['binding_digest'] '^[0-9a-f]{64}$' 64;U64 $p['binding_revocation_revision']
+          N ($p['binding_digest'] -ceq $bd) 'PERMIT_BINDING_DIGEST'
+          }
+          $ev.control_digest=$cd;$ev.bootstrap_expected_content_sha256=$c['workflow_content_sha256']
+          $checks.approved_revision='RECORD_MATCH_PENDING_EXTERNAL'
+          $script:phase='RUNNER_INVENTORY'
+          foreach($v in @($re,$ro,$rc,$nm,$env:ImageOS,$env:ImageVersion)){
+          N (-not [string]::IsNullOrWhiteSpace($v)) 'UNKNOWN_RUNNER_OR_IMAGE'
+          }
+          N ($re -ceq 'github-hosted' -and $ro -ceq 'Windows' -and $rc -ceq 'X64') 'RUNNER_IDENTITY'
+          N ([OperatingSystem]::IsWindows() -and
+          [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ceq 'X64' -and
+          [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() -ceq 'X64') 'LOCAL_OS_ARCH'
+          $checks.hosted_runner='CANDIDATE_REQUIRES_SERVICE_JOB_MATCH'
+          Text $nm '^[A-Za-z0-9][A-Za-z0-9_. -]*$' 128
+          Text $env:ImageOS '^[A-Za-z0-9_.-]+$' 64;Text $env:ImageVersion '^[A-Za-z0-9_.-]+$' 64
+          N ($PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSEdition -ceq 'Core') 'PS7_REQUIRED'
+          $self=[Diagnostics.Process]::GetCurrentProcess()
+          try{$shell=[IO.Path]::GetFullPath($self.MainModule.FileName)}catch{Reject 'UNKNOWN_SHELL'}finally{$self.Dispose()}
+          N ([string]::Equals($shell,'C:\Program Files\PowerShell\7\pwsh.exe',[StringComparison]::OrdinalIgnoreCase)) 'SHELL_PATH'
+          N ($env:PATH -ceq 'C:\Program Files\PowerShell\7') 'SHELL_SEARCH_PATH'
+          Modules
+          $before=[IO.FileInfo]::new($shell);$size=$before.Length;$write=$before.LastWriteTimeUtc
+          $file=[IO.File]::Open($shell,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+          try{$hash=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($file)).ToLowerInvariant()}finally{$file.Dispose()}
+          $after=[IO.FileInfo]::new($shell)
+          N ($after.Length -eq $size -and $after.LastWriteTimeUtc -eq $write) 'SHELL_CHANGED'
+          $ev.runner_observation=@{
+          source='CONTEXT_AND_LOCAL_NOT_ATTESTATION'
+          runner_type=$re;runner_name=$nm;runner_group=$null
+          runner_group_status='PENDING_SERVICE_JOB_RECONCILIATION';os='windows';architecture='amd64';image_label='windows-2025'
+          image_identity=$env:ImageOS;image_version=$env:ImageVersion;shell_path=$shell;shell_version=$PSVersionTable.PSVersion.ToString()
+          shell_sha256=$hash;shell_size=$size.ToString($inv)
+          os_version=[Environment]::OSVersion.Version.ToString();runtime_version=[Runtime.InteropServices.RuntimeInformation]::FrameworkDescription
+          }
+          $checks.os_image_shell='OBSERVED_PENDING_EXTERNAL'
+          N (-not [string]::IsNullOrWhiteSpace($env:CI0_CONTENT_TOKEN)) 'CONTENT_TOKEN_MISSING'
+          $handler=[Net.Http.HttpClientHandler]::new()
+          $handler.AllowAutoRedirect=$false;$handler.UseCookies=$false;$handler.AutomaticDecompression=[Net.DecompressionMethods]::None
+          $client=[Net.Http.HttpClient]::new($handler);$client.Timeout=[Threading.Timeout]::InfiniteTimeSpan
+          $client.DefaultRequestVersion=[Version]::new(1,1);$client.DefaultVersionPolicy=[Net.Http.HttpVersionPolicy]::RequestVersionExact
+          foreach($pin in $pins){$ev.source_checks+=(SourceRead $pin)}
+          $script:phase='BINDING'
+          if($sc -ceq 'inventory-only'){
+          Window $c['issued_at'] $c['expires_at'];Window $p['issued_at'] $p['expires_at']
+          $checks.binding='BLOCKED_NO_BINDING';Reject 'BLOCKED_NO_BINDING'
+          }
+          $b=Record $bj $bd
+          Shape $b 'schema,status,binding_id,binding_revision,repository_id,workflow_sha,workflow_content_sha256,source_commit,runner_type,os,architecture,image_label,image_identity,image_version,profile_id,profile_version,profile_sha256,allowed_trigger,allowed_scope,issued_at,expires_at,revocation_state,revocation_revision,revocation_evidence_ref,environment_protection_ref,bootstrap_runtime_ref,clock_policy_ref' 'workflow_identity,runner_group,permission_profile,approval_identity' 'ci1_execution_authorized'
+          Match $b @{schema='ipmv.stage0c.ci0-runner-binding.proposal.v1';status='APPROVED_ACTIVE';repository_id=$repoId
+          workflow_sha=$ws;workflow_content_sha256=$c['workflow_content_sha256'];source_commit=$source
+          runner_type='github-hosted';os='windows';architecture='amd64';image_label='windows-2025'
+          image_identity=$env:ImageOS;image_version=$env:ImageVersion;profile_id='ipmv-core-purego-v1';profile_version='1';profile_sha256=$profile
+          allowed_trigger='workflow_dispatch';allowed_scope='CI0_RUNNER_BINDING_RECONCILIATION_ONLY';revocation_state='VALID'
+          revocation_revision=$p['binding_revocation_revision'];environment_protection_ref=$c['environment_protection_ref']
+          bootstrap_runtime_ref=$c['bootstrap_runtime_ref'];clock_policy_ref=$c['clock_policy_ref']}
+          Ref $b['binding_id'];U64 $b['binding_revision'];U64 $b['revocation_revision']
+          Ref $b['revocation_evidence_ref'];Approval $b['approval_identity']
+          Shape $b['workflow_identity'] 'repository,path,ref'
+          Match $b['workflow_identity'] @{repository=$repo;path='.github/workflows/core-runtime-bootstrap.yml';ref='refs/heads/main'}
+          Shape $b['runner_group'] 'state,service_evidence_ref' '' '' 'id,name'
+          Match $b['runner_group'] @{state='STANDARD_HOSTED_NOT_APPLICABLE';id=$null;name=$null}
+          Ref $b['runner_group']['service_evidence_ref']
+          $ev.binding_ref=@{binding_id=$b['binding_id'];binding_revision=$b['binding_revision'];digest=$bd;revocation_revision=$b['revocation_revision']}
+          $checks.binding='RECORD_MATCH_PENDING_EXTERNAL'
+          $script:phase='PERMISSION_AND_ENVIRONMENT'
+          Permission $b['permission_profile']
+          $ev.permission_evidence_ref=$c['permission_evidence_ref'];$ev.environment_evidence_ref=$c['environment_protection_ref']
+          $checks.permission='RECORD_MATCH_PENDING_EXTERNAL'
+          $checks.environment='PENDING_EXTERNAL_APPROVAL_HISTORY'
+          Window $c['issued_at'] $c['expires_at'];Window $p['issued_at'] $p['expires_at'];Window $b['issued_at'] $b['expires_at']
+          $ev.status='CANDIDATE_MATCH_PENDING_INDEPENDENT_RECONCILIATION'
+          $script:reason='LOCAL_CHECKS_COMPLETE_NOT_CI0_PASS';$exitCode=0
+          }catch{
+          $ev.status='FAILED'
+          if($script:reason.StartsWith('UNKNOWN_',[StringComparison]::Ordinal)){$ev.status='UNKNOWN'}
+          if($script:reason -ceq 'BLOCKED_NO_BINDING'){$ev.status='BLOCKED_NO_BINDING'}
+          $exitCode=1
+          }finally{
+          if($null -ne $client){$client.Dispose()};if($null -ne $handler){$handler.Dispose()}
+          $ev.reason=$script:reason;$ev.phase=$script:phase
+          $ev.get_count=$script:getCount.ToString($inv)
+          $ev.observed_at=[DateTimeOffset]::UtcNow.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'",$inv)
+          try{
+          U64 $ri;U64 $ra
+          $bytes=$utf8.GetBytes((Canonical $ev))
+          N ($bytes.Length -gt 0 -and $bytes.Length -le 262144) 'EVIDENCE_SIZE'
+          $digest=Hex $bytes;$count=[int][Math]::Ceiling($bytes.Length/12288.0)
+          N ($count -gt 0 -and $count -le 32) 'EVIDENCE_CHUNKS'
+          $chunks=[Collections.Generic.List[string]]::new()
+          for($offset=0;$offset -lt $bytes.Length;$offset+=12288){$chunks.Add([Convert]::ToBase64String($bytes,$offset,[Math]::Min(12288,$bytes.Length-$offset)))}
+          $frame='run='+$ri+' attempt='+$ra+' job=ci0 size='+
+          $bytes.Length.ToString($inv)+' chunks='+
+          $count.ToString($inv)+' sha256='+$digest
+          [Console]::WriteLine('IPMV_CI0_EVIDENCE_V1 BEGIN '+$frame)
+          for($i=0;$i -lt $chunks.Count;$i++){
+          [Console]::WriteLine('IPMV_CI0_EVIDENCE_V1 CHUNK run='+$ri+' attempt='+$ra+
+          ' job=ci0 index='+($i+1).ToString($inv)+' data='+$chunks[$i])
+          }
+          N (-not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) 'SUMMARY_CHANNEL_MISSING'
+          $summary='CI-0 candidate evidence; final CI0_PASS is not issued here.'+[Environment]::NewLine+
+          'Run '+$ri+' / attempt '+$ra+' / job ci0'+[Environment]::NewLine+
+          'Envelope SHA-256: '+$digest+[Environment]::NewLine+'Result: '+$ev.status+'; CI-1 authorization: false.'+[Environment]::NewLine
+          [IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY,$summary,$utf8)
+          [Console]::WriteLine('IPMV_CI0_EVIDENCE_V1 END '+$frame)
+          }catch{
+          [Console]::Error.WriteLine('IPMV_CI0_EVIDENCE_V1 INCOMPLETE evidence_or_summary_failure')
+          $exitCode=1
+          }
+          }
+          exit $exitCode
